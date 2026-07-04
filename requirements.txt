@@ -1,0 +1,11 @@
+streamlit
+pandas
+numpy
+scipy
+plotly
+CoolProp
+reportlab
+openpyxl
+xlsxwriter
+PyMuPDF
+pypdf
