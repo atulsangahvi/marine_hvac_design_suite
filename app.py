@@ -33,7 +33,7 @@ from modules.manufacturing_package import make_csv_zip
 from modules.design_optimizer import condenser_geometry_optimizer
 from modules.validation_benchmarks import run_benchmarks
 
-APP_VERSION = "marine-chiller-suite-v9-mermaid-render-fix"
+APP_VERSION = "marine-chiller-suite-v11-evaporator-inputs-dp-capacity"
 
 st.set_page_config(page_title="Marine Chiller Design Suite", layout="wide")
 
@@ -211,40 +211,101 @@ with tabs[2]:
             chw_out = st.number_input("CHW/glycol leaving cooler (°C)", -25.0, 25.0, 7.0, step=0.5)
         with e2:
             glycol = st.number_input("Glycol %", 0.0, 60.0, 0.0, step=1.0)
-            evap_tube_count = st.number_input("Evaporator tube count", 4, 2000, 80, step=4)
+            ev_water_flow = st.number_input("CHW/glycol flow (m³/h, 0 = calculate from kW and ΔT)", 0.0, 5000.0, 0.0, step=0.1)
         with e3:
+            evap_tube_count = st.number_input("Evaporator tube count", 4, 2000, 80, step=4)
             evap_tube_len = st.number_input("Evaporator tube length (m)", 0.2, 10.0, 1.2, step=0.1)
-            evap_passes = st.number_input("Evaporator passes", 1, 12, 2, step=1)
         with e4:
-            evap_u = st.number_input("Override evaporator U (W/m²K, 0 = calculate)", 0.0, 5000.0, 0.0, step=50.0)
+            evap_passes = st.number_input("Evaporator passes", 1, 12, 2, step=1)
             ref_in_tubes = st.checkbox("DX mode: refrigerant in tubes", value=True, help="Recommended for DX shell-and-tube evaporator. Uncheck only for flooded/shell-side refrigerant screening.")
-        with st.expander("Advanced shell-and-tube evaporator geometry"):
-            ev_shell_id = st.number_input("Evaporator shell ID override (mm, 0 = estimate)", 0.0, 2000.0, 0.0, step=5.0)
-            ev_baffle_spacing = st.number_input("Evaporator baffle spacing override (mm, 0 = estimate)", 0.0, 1000.0, 0.0, step=5.0)
-            ev_baffle_cut = st.number_input("Evaporator baffle cut (%)", 15.0, 45.0, 25.0, step=1.0)
-            ev_pitch_ratio = st.number_input("Evaporator tube pitch ratio", 1.10, 2.00, 1.25, step=0.05)
-            ev_ref_mdot = st.number_input("Refrigerant mass flow for evaporator (kg/s, 0 = estimate)", 0.0, 20.0, 0.0, step=0.01, format="%.4f")
+        with st.expander("Advanced shell-and-tube evaporator geometry and limits", expanded=True):
+            g1,g2,g3,g4 = st.columns(4)
+            with g1:
+                ev_tube_od = st.selectbox("Evaporator tube OD", ["3/8 in", "1/2 in", "5/8 in", "3/4 in"], index=2)
+                ev_tube_od_mm = {"3/8 in": 9.52, "1/2 in": 12.70, "5/8 in": 15.88, "3/4 in": 19.05}[ev_tube_od]
+                ev_tube_wall = st.number_input("Evaporator tube wall (mm)", 0.25, 3.0, 0.8, step=0.05)
+            with g2:
+                ev_shell_id = st.number_input("Evaporator shell ID override (mm, 0 = estimate)", 0.0, 2000.0, 0.0, step=5.0)
+                ev_baffle_spacing = st.number_input("Evaporator baffle spacing override (mm, 0 = estimate)", 0.0, 1000.0, 0.0, step=5.0)
+            with g3:
+                ev_baffle_cut = st.number_input("Evaporator baffle cut (%)", 15.0, 45.0, 25.0, step=1.0)
+                ev_pitch_ratio = st.number_input("Evaporator tube pitch ratio", 1.10, 2.00, 1.25, step=0.05)
+            with g4:
+                evap_u = st.number_input("Override evaporator U (W/m²K, 0 = calculate)", 0.0, 5000.0, 0.0, step=50.0)
+                ev_ref_mdot = st.number_input("Refrigerant mass flow for evaporator (kg/s, 0 = estimate)", 0.0, 20.0, 0.0, step=0.01, format="%.4f")
+            l1,l2,l3 = st.columns(3)
+            with l1:
+                ev_max_wdp = st.number_input("Max allowable water-side ΔP (kPa)", 1.0, 500.0, 80.0, step=5.0)
+            with l2:
+                ev_max_rdp = st.number_input("Max allowable refrigerant-side ΔP (kPa)", 1.0, 500.0, 80.0, step=5.0)
+            with l3:
+                ev_target_sh = st.number_input("Target evaporator outlet superheat (K)", 1.0, 20.0, superheat_k, step=0.5)
         evap_res = shell_tube_evaporator_screening(
-            cooling_kw, chw_in, chw_out, "Water/Glycol", glycol, evap_c, 15.88, evap_tube_len,
-            evap_tube_count, evap_passes, evap_u, refrigerant_in_tubes=ref_in_tubes,
+            cooling_kw, chw_in, chw_out, "Water/Glycol", glycol, evap_c, ev_tube_od_mm, evap_tube_len,
+            evap_tube_count, evap_passes, evap_u, tube_wall_mm=ev_tube_wall, refrigerant_in_tubes=ref_in_tubes,
             refrigerant=ref, shell_id_mm=(ev_shell_id or None), baffle_spacing_mm=(ev_baffle_spacing or None),
             baffle_cut_pct=ev_baffle_cut, pitch_ratio=ev_pitch_ratio,
-            refrigerant_mass_flow_kg_s=(ev_ref_mdot or None)
+            refrigerant_mass_flow_kg_s=(ev_ref_mdot or None), water_flow_m3h_input=(ev_water_flow or None),
+            max_water_dp_kpa=ev_max_wdp, max_refrigerant_dp_kpa=ev_max_rdp, target_superheat_k=ev_target_sh
         )
+        k1,k2,k3,k4 = st.columns(4)
+        k1.metric("CHW/glycol flow", f"{evap_res.get('water_flow_m3h',0):.2f} m³/h")
+        k2.metric("Water velocity", f"{evap_res.get('water_velocity_ms',0):.2f} m/s", evap_res.get('water_velocity_status',''))
+        k3.metric("Water ΔP", f"{evap_res.get('water_dp_kpa_est',0):.1f} kPa", evap_res.get('water_dp_status',''))
+        k4.metric("Freon ΔP", f"{evap_res.get('refrigerant_dp_kpa_est',0):.1f} kPa", evap_res.get('refrigerant_dp_status',''))
+        h1,h2,h3,h4 = st.columns(4)
+        h1.metric("Cwater", f"{evap_res.get('water_heat_capacity_rate_kw_per_k',0):.2f} kW/K")
+        h2.metric("Limiting side", str(evap_res.get('limiting_side','')))
+        h3.metric("Qmax by Cmin", f"{evap_res.get('max_heat_transfer_possible_kw_by_cmin',0):.1f} kW")
+        h4.metric("Effectiveness", f"{evap_res.get('effectiveness_based_on_cmin',0):.2f}")
     else:
         a1,a2,a3,a4 = st.columns(4)
         with a1:
+            air_input_mode = st.radio("Air input", ["Air flow", "Face velocity"], horizontal=True)
+            face_velocity_in = st.number_input("Face velocity (m/s)", 0.5, 6.0, 2.0, step=0.1) if air_input_mode == "Face velocity" else 0.0
             air_flow = st.number_input("Air flow (m³/s)", 0.1, 200.0, 4.0, step=0.1)
-            db = st.number_input("Entering DB (°C)", 0.0, 60.0, 27.0, step=0.5)
         with a2:
-            wb = st.number_input("Entering WB (°C)", 0.0, 40.0, 19.0, step=0.5)
-            rows = st.number_input("Coil rows", 1, 12, 4, step=1)
+            psych_mode = st.radio("Entering air method", ["DB+WB", "DB+RH"], horizontal=True)
+            db = st.number_input("Entering DB (°C)", 0.0, 60.0, 27.0, step=0.5)
+            wb = st.number_input("Entering WB (°C)", 0.0, 40.0, 19.0, step=0.5, disabled=(psych_mode=="DB+RH"))
+            rh = st.number_input("Entering RH (%)", 1.0, 100.0, 50.0, step=1.0, disabled=(psych_mode=="DB+WB"))
         with a3:
-            face_area = st.number_input("Coil face area (m²)", 0.1, 100.0, 2.0, step=0.1)
-            fpi = st.number_input("FPI", 4.0, 24.0, 12.0, step=1.0)
+            coil_width = st.number_input("Coil finned length / face width (m)", 0.1, 10.0, 1.2, step=0.05)
+            coil_height = st.number_input("Coil face height (m)", 0.1, 10.0, 1.0, step=0.05)
         with a4:
-            tube_type = st.selectbox("Tube type", ["Smooth", "Microfin", "Microchannel/flat"], index=0)
-        evap_res = air_cooled_dx_coil_screening(cooling_kw, air_flow, db, wb, evap_c, rows, face_area, fpi, tube_type=tube_type)
+            rows = st.number_input("Coil rows", 1, 12, 4, step=1)
+            fpi = st.number_input("FPI", 4.0, 24.0, 12.0, step=1.0)
+        with st.expander("Advanced air-cooled DX coil geometry and limits", expanded=True):
+            ac1,ac2,ac3,ac4 = st.columns(4)
+            with ac1:
+                air_tube_od_choice = st.selectbox("Tube OD", ["7 mm", "3/8 in", "1/2 in", "5/8 in"], index=1)
+                air_tube_od_mm = {"7 mm":7.0, "3/8 in":9.52, "1/2 in":12.70, "5/8 in":15.88}[air_tube_od_choice]
+                air_tube_wall = st.number_input("Tube wall (mm)", 0.25, 2.0, 0.35, step=0.05)
+            with ac2:
+                tube_type = st.selectbox("Fin/tube type", ["Smooth", "Microfin", "Microchannel/flat"], index=0)
+                circuits = st.number_input("Refrigerant circuits", 1, 100, 4, step=1)
+            with ac3:
+                st_pitch = st.number_input("Transverse tube pitch (mm)", 10.0, 80.0, 25.4, step=0.5)
+                sl_pitch = st.number_input("Longitudinal tube pitch (mm)", 10.0, 80.0, 22.0, step=0.5)
+            with ac4:
+                ac_ref_mdot = st.number_input("Refrigerant mass flow for air coil (kg/s, 0 = estimate)", 0.0, 20.0, 0.0, step=0.01, format="%.4f")
+                max_air_dp = st.number_input("Max air-side ΔP (Pa)", 10.0, 1000.0, 180.0, step=10.0)
+                max_ref_dp = st.number_input("Max refrigerant ΔP (kPa)", 1.0, 500.0, 80.0, step=5.0)
+        face_area = coil_width * coil_height
+        evap_res = air_cooled_dx_coil_screening(
+            cooling_kw, air_flow, db, wb, evap_c, rows, face_area, fpi, circuit_count=int(circuits), tube_type=tube_type,
+            input_method=psych_mode, rh_pct=rh, face_width_m=coil_width, face_height_m=coil_height,
+            face_velocity_input_ms=(face_velocity_in or None), tube_od_mm=air_tube_od_mm, tube_wall_mm=air_tube_wall,
+            tube_pitch_longitudinal_mm=sl_pitch, tube_pitch_transverse_mm=st_pitch, refrigerant=ref,
+            refrigerant_mass_flow_kg_s=(ac_ref_mdot or None), condensing_temp_c=cond_c, target_superheat_k=superheat_k,
+            max_air_dp_pa=max_air_dp, max_refrigerant_dp_kpa=max_ref_dp
+        )
+        k1,k2,k3,k4 = st.columns(4)
+        k1.metric("Air flow", f"{evap_res.get('air_flow_m3s',0):.2f} m³/s")
+        k2.metric("Face velocity", f"{evap_res.get('face_velocity_ms',0):.2f} m/s", evap_res.get('face_velocity_status',''))
+        k3.metric("Air ΔP", f"{evap_res.get('air_dp_pa_est',0):.0f} Pa", evap_res.get('air_dp_status',''))
+        k4.metric("Freon ΔP", f"{evap_res.get('refrigerant_dp_kpa_est',0):.1f} kPa", evap_res.get('refrigerant_dp_status',''))
+        st.caption(str(evap_res.get('expected_issue_due_to_dp','')))
     st.dataframe(evaporator_table(evap_res), hide_index=True, use_container_width=True)
     with st.expander("Correlation audit for evaporator modules"):
         st.dataframe(correlation_audit_table(), hide_index=True, use_container_width=True)

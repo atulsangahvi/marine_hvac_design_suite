@@ -132,3 +132,22 @@ The condenser report now also includes a preliminary shell-side refrigerant/Freo
 - `shell_ref_baffle_spaces`
 
 This is still a screening value and must be verified by detailed shell-side two-phase Bell-Delaware/nozzle pressure-drop design before manufacture.
+
+## v11 evaporator module update
+
+The evaporator tab now has expanded inputs and outputs for both shell-and-tube and air-cooled DX coil modes.
+
+### Shell-and-tube evaporator
+- User can enter CHW/water/glycol flow directly, or enter 0 to calculate flow from kW and water delta-T.
+- User can select tube OD, wall, tube count, passes, length, shell ID, baffle spacing, baffle cut and pitch ratio.
+- Output includes water/glycol flow, velocity, pressure drop and status.
+- Output includes refrigerant pressure drop, effective evaporation temperature after refrigerant DP, evaporation temperature loss and superheat assessment.
+- Output includes heat capacity rate, Cmin/Cmax ratio, limiting side, maximum heat transfer by Cmin and effectiveness.
+
+### Air-cooled DX coil evaporator
+- User can enter air by DB+WB or DB+RH.
+- User can enter either air flow or face velocity.
+- User can enter coil width and height, rows, FPI, tube OD, tube wall, transverse and longitudinal tube pitch and refrigerant circuits.
+- Output includes face velocity, air pressure drop, refrigerant pressure drop, estimated refrigerant path length, effective evaporation temperature after DP and expected operating issue if DP is high.
+
+These calculations are still screening calculations. For production coil manufacture, use the standalone detailed air-cooled evaporator engine and validate against manufacturer/test data.

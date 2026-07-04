@@ -221,13 +221,24 @@ def shell_tube_evaporator_screening(capacity_kw: float, chw_in_c: float, chw_out
                                     baffle_spacing_mm: Optional[float] = None,
                                     baffle_cut_pct: float = 25.0,
                                     pitch_ratio: float = 1.25,
-                                    tube_layout: str = "triangular") -> dict:
-    """Screen a shell-and-tube DX or flooded evaporator with calculated U when possible."""
+                                    tube_layout: str = "triangular",
+                                    water_flow_m3h_input: Optional[float] = None,
+                                    max_water_dp_kpa: float = 80.0,
+                                    max_refrigerant_dp_kpa: float = 80.0,
+                                    target_superheat_k: float = 6.0) -> dict:
+    """Screen a shell-and-tube DX or flooded evaporator with calculated U when possible.
+
+    v11 adds user-entered water/glycol flow, heat-capacity/effectiveness analysis,
+    refrigerant and water pressure-drop status, and refrigerant pressure-drop effect
+    on effective evaporating temperature.
+    """
     props = glycol_props(glycol_pct, 0.5 * (chw_in_c + chw_out_c), fluid)
     cp_kj = props["cp"] / 1000.0
     rho = props["rho"]
-    flow_m3h = water_flow_m3h(capacity_kw, max(chw_in_c - chw_out_c, 0.1), cp_kj, rho)
+    design_flow_m3h = water_flow_m3h(capacity_kw, max(chw_in_c - chw_out_c, 0.1), cp_kj, rho)
+    flow_m3h = float(water_flow_m3h_input) if water_flow_m3h_input and water_flow_m3h_input > 0 else design_flow_m3h
     mdot_w = flow_m3h * rho / 3600.0
+    chw_out_from_flow_c = chw_in_c - capacity_kw / max(mdot_w * cp_kj, 1e-12)
 
     do = tube_od_mm / 1000.0
     di = max(0.001, (tube_od_mm - 2.0 * tube_wall_mm) / 1000.0)
@@ -297,8 +308,39 @@ def shell_tube_evaporator_screening(capacity_kw: float, chw_in_c: float, chw_out
 
     U_used = Uo_calc if u_w_m2k <= 0 else u_w_m2k
     q_possible_kw = U_used * area_o * lmtd / 1000.0
+
+    # Heat-capacity-rate / effectiveness view. For a boiling refrigerant at nearly
+    # constant temperature, refrigerant C is effectively very large, so water/glycol
+    # is normally Cmin and the limiting sensible side.
+    c_water_kw_k = mdot_w * cp_kj
+    c_refrigerant_kw_k_equiv = 1.0e9 if refrigerant_in_tubes else 1.0e9
+    c_min_kw_k = min(c_water_kw_k, c_refrigerant_kw_k_equiv)
+    c_max_kw_k = max(c_water_kw_k, c_refrigerant_kw_k_equiv)
+    capacity_ratio = c_min_kw_k / max(c_max_kw_k, 1e-12)
+    q_max_kw = c_min_kw_k * max(chw_in_c - evap_temp_c, 0.0)
+    effectiveness = capacity_kw / max(q_max_kw, 1e-12)
+    limiting_side = "water/glycol side" if c_water_kw_k <= c_refrigerant_kw_k_equiv else "refrigerant side"
+
     velocity_status = "OK" if 0.6 <= velocity_used <= 2.8 else ("LOW" if velocity_used < 0.6 else "HIGH")
-    dp_status = "OK" if dp_used <= 80.0 else "HIGH"
+    dp_status = "OK" if dp_used <= max_water_dp_kpa else "HIGH"
+    ref_dp = float(refcalc.get("ref_dp_total_kpa", 0.0))
+    ref_dp_status = "OK" if ref_dp <= max_refrigerant_dp_kpa else "HIGH"
+
+    # Convert refrigerant evaporator pressure drop into equivalent saturation-temperature loss.
+    evap_temp_drop_k = 0.0
+    effective_evap_temp_c = evap_temp_c
+    try:
+        if PropsSI is not None and ref_dp > 0:
+            p0 = PropsSI("P", "T", evap_temp_c + 273.15, "Q", 1, refrigerant)
+            p1 = max(1000.0, p0 - ref_dp*1000.0)
+            effective_evap_temp_c = PropsSI("T", "P", p1, "Q", 1, refrigerant) - 273.15
+            evap_temp_drop_k = evap_temp_c - effective_evap_temp_c
+    except Exception:
+        evap_temp_drop_k = 0.0
+        effective_evap_temp_c = evap_temp_c
+    superheat_assessment = "OK" if target_superheat_k >= 4.0 and ref_dp_status == "OK" else "CHECK"
+    if ref_dp_status != "OK":
+        notes.append("High refrigerant pressure drop reduces effective evaporating temperature at compressor suction and can increase superheat, reduce capacity and increase compressor lift.")
     if u_w_m2k > 0:
         notes.append("User-entered U overrides calculated U; calculated U is still shown for audit.")
 
@@ -310,6 +352,14 @@ def shell_tube_evaporator_screening(capacity_kw: float, chw_in_c: float, chw_out
         "area_m2": round(area_o, 3),
         "lmtd_k": round(lmtd, 3),
         "water_flow_m3h": round(flow_m3h, 3),
+        "water_design_flow_m3h_at_entered_deltaT": round(design_flow_m3h, 3),
+        "estimated_leaving_water_from_flow_c": round(chw_out_from_flow_c, 2),
+        "water_heat_capacity_rate_kw_per_k": round(c_water_kw_k, 3),
+        "refrigerant_heat_capacity_rate_kw_per_k": "phase-change/very high",
+        "capacity_ratio_cmin_cmax": round(capacity_ratio, 6),
+        "limiting_side": limiting_side,
+        "max_heat_transfer_possible_kw_by_cmin": round(q_max_kw, 3),
+        "effectiveness_based_on_cmin": round(effectiveness, 3),
         "water_side_location": h_water_label,
         "water_htc_w_m2k": round(h_water, 0),
         "water_velocity_ms": round(velocity_used, 3),
@@ -324,8 +374,13 @@ def shell_tube_evaporator_screening(capacity_kw: float, chw_in_c: float, chw_out
         "refrigerant_htc_w_m2k": round(refcalc.get("ref_evap_htc_w_m2k", 0.0), 0),
         "refrigerant_boiling_number": round(refcalc.get("ref_boiling_number", 0.0), 6),
         "refrigerant_evap_multiplier": round(refcalc.get("ref_evap_multiplier", 1.0), 2),
-        "refrigerant_dp_kpa_est": round(refcalc.get("ref_dp_total_kpa", 0.0), 3),
-        "status": "OK" if q_possible_kw >= capacity_kw and velocity_status != "HIGH" and dp_status == "OK" else "CHECK",
+        "refrigerant_dp_kpa_est": round(ref_dp, 3),
+        "refrigerant_dp_status": ref_dp_status,
+        "effective_evaporating_temp_after_ref_dp_c": round(effective_evap_temp_c, 2),
+        "evaporating_temp_loss_due_to_ref_dp_k": round(evap_temp_drop_k, 3),
+        "target_superheat_k": round(target_superheat_k, 2),
+        "superheat_assessment": superheat_assessment,
+        "status": "OK" if q_possible_kw >= capacity_kw and velocity_status != "HIGH" and dp_status == "OK" and ref_dp_status == "OK" and effectiveness <= 1.0 else "CHECK",
         "engineering_note": " ".join(notes),
     }
 
@@ -381,10 +436,28 @@ def airside_wang_style_htc_dp(face_velocity: float, rows: int, fpi: float, tube_
 
 def air_cooled_dx_coil_screening(capacity_kw: float, air_flow_m3s: float, db_in_c: float, wb_in_c: float,
                                  evap_temp_c: float, rows: int, face_area_m2: float, fpi: float = 12.0,
-                                 circuit_count: int = 4, tube_type: str = "Smooth") -> dict:
-    """Air-cooled DX coil screening with air-side j/f and wet-coil enthalpy method."""
+                                 circuit_count: int = 4, tube_type: str = "Smooth",
+                                 input_method: str = "DB+WB", rh_pct: float = 50.0,
+                                 face_width_m: Optional[float] = None, face_height_m: Optional[float] = None,
+                                 face_velocity_input_ms: Optional[float] = None,
+                                 tube_od_mm: float = 9.52, tube_wall_mm: float = 0.35,
+                                 tube_pitch_longitudinal_mm: float = 22.0,
+                                 tube_pitch_transverse_mm: float = 25.4,
+                                 refrigerant: str = "R134a", refrigerant_mass_flow_kg_s: Optional[float] = None,
+                                 condensing_temp_c: float = 45.0, target_superheat_k: float = 6.0,
+                                 max_air_dp_pa: float = 180.0, max_refrigerant_dp_kpa: float = 80.0) -> dict:
+    """Air-cooled DX coil screening with geometry, air-flow, psychrometric and refrigerant DP checks."""
+    if face_width_m and face_height_m and face_width_m > 0 and face_height_m > 0:
+        face_area_m2 = face_width_m * face_height_m
+    if face_velocity_input_ms and face_velocity_input_ms > 0:
+        air_flow_m3s = face_velocity_input_ms * max(face_area_m2, 1e-9)
     face_velocity = air_flow_m3s / max(face_area_m2, 1e-9)
-    W_in = _W_from_T_WB(db_in_c, min(wb_in_c, db_in_c))
+    if input_method == "DB+RH":
+        W_in = _W_from_T_RH(db_in_c, rh_pct/100.0)
+        # equivalent WB not solved exactly; report RH mode separately
+        wb_in_c = wb_in_c
+    else:
+        W_in = _W_from_T_WB(db_in_c, min(wb_in_c, db_in_c))
     h_in = _h_moist(db_in_c, W_in)
     rho_air = 1.18
     mdot_air = air_flow_m3s*rho_air
@@ -396,7 +469,9 @@ def air_cooled_dx_coil_screening(capacity_kw: float, air_flow_m3s: float, db_in_
     bf_required = _clamp(bf_required, 0.01, 0.99)
     ntu_required = -math.log(bf_required)
 
-    air = airside_wang_style_htc_dp(face_velocity, rows, fpi)
+    tube_od_m = tube_od_mm/1000.0
+    tube_id_m = max(0.001, (tube_od_mm - 2.0*tube_wall_mm)/1000.0)
+    air = airside_wang_style_htc_dp(face_velocity, rows, fpi, tube_od_m=tube_od_m)
     # Estimate available UA from finned area density. Typical coils have large outside area.
     area_density = 55.0 * (fpi/12.0) * max(rows,1)  # m2 outside per m2 face, rough compact coil value
     Ao = face_area_m2 * area_density
@@ -416,13 +491,47 @@ def air_cooled_dx_coil_screening(capacity_kw: float, air_flow_m3s: float, db_in_
     latent_kw = max(0.0, q_possible_kw - sensible_ref_kw)
     shr = _clamp(sensible_ref_kw/max(q_possible_kw,1e-12), 0.0, 1.0)
     face_status = "OK" if 1.5 <= face_velocity <= 3.2 else ("LOW" if face_velocity < 1.5 else "HIGH")
-    dp_status = "OK" if air["air_dp_pa"] <= 180.0 else "HIGH"
+    dp_status = "OK" if air["air_dp_pa"] <= max_air_dp_pa else "HIGH"
     row_status = "OK" if rows >= max(2, math.ceil(ntu_required/0.55)) else "LOW_ROWS"
+
+    # Refrigerant side screening based on coil geometry. This intentionally mirrors
+    # the standalone air-coil app idea: width, height and tube pitch define tube count
+    # and therefore refrigerant circuit length/area.
+    tubes_per_row = max(1, int((face_height_m or math.sqrt(face_area_m2)) / max(tube_pitch_transverse_mm/1000.0, 1e-6)))
+    total_tubes = max(1, tubes_per_row * int(rows))
+    circuits = max(1, int(circuit_count))
+    tubes_per_circuit = max(1, math.ceil(total_tubes / circuits))
+    tube_length_each_m = face_width_m if face_width_m and face_width_m > 0 else math.sqrt(face_area_m2)
+    ref_path_length_m = tubes_per_circuit * tube_length_each_m
+    area_i = math.pi * tube_id_m * ref_path_length_m * circuits
+    if refrigerant_mass_flow_kg_s is None:
+        sat = _sat_props(refrigerant, evap_temp_c)
+        refrigerant_mass_flow_kg_s = capacity_kw*1000.0 / max(sat["h_fg"]*0.75, 1.0)
+    refcalc = dx_refrigerant_tube_evaporation(refrigerant, evap_temp_c, refrigerant_mass_flow_kg_s, tube_id_m, circuits, ref_path_length_m, capacity_kw, area_i)
+    ref_dp = refcalc.get("ref_dp_total_kpa", 0.0) * refrig_dp_index
+    ref_dp_status = "OK" if ref_dp <= max_refrigerant_dp_kpa else "HIGH"
+    evap_temp_drop_k = 0.0
+    effective_evap_temp_c = evap_temp_c
+    try:
+        if PropsSI is not None and ref_dp > 0:
+            p0 = PropsSI("P", "T", evap_temp_c+273.15, "Q", 1, refrigerant)
+            p1 = max(1000.0, p0-ref_dp*1000.0)
+            effective_evap_temp_c = PropsSI("T", "P", p1, "Q", 1, refrigerant)-273.15
+            evap_temp_drop_k = evap_temp_c-effective_evap_temp_c
+    except Exception:
+        pass
+    expected_issue = "OK" if ref_dp_status == "OK" and dp_status == "OK" else "CHECK: excessive air or refrigerant pressure drop can lower effective SST, raise compressor lift/discharge temperature, and reduce capacity."
     return {
         "capacity_required_kw": round(capacity_kw, 3),
         "capacity_possible_kw": round(q_possible_kw*tube_factor, 3),
+        "entering_air_input_method": input_method,
         "entering_air_db_c": round(db_in_c, 2),
         "entering_air_wb_c": round(wb_in_c, 2),
+        "entering_air_rh_pct": round(rh_pct, 1),
+        "air_flow_m3s": round(air_flow_m3s, 3),
+        "face_width_m": round(face_width_m or math.sqrt(face_area_m2), 3),
+        "face_height_m": round(face_height_m or math.sqrt(face_area_m2), 3),
+        "face_area_m2": round(face_area_m2, 3),
         "leaving_air_db_est_c": round(T_out, 2),
         "leaving_air_w_kgkg_est": round(W_out, 5),
         "sensible_heat_ratio_est": round(shr, 3),
@@ -438,10 +547,26 @@ def air_cooled_dx_coil_screening(capacity_kw: float, air_flow_m3s: float, db_in_
         "ntu_required": round(ntu_required, 2),
         "ntu_available": round(ntu_available, 2),
         "rows_status": row_status,
+        "tube_type": tube_type,
+        "tube_od_mm": round(tube_od_mm, 2),
+        "tube_id_mm": round(tube_id_m*1000, 2),
+        "tube_pitch_transverse_mm": round(tube_pitch_transverse_mm, 2),
+        "tube_pitch_longitudinal_mm": round(tube_pitch_longitudinal_mm, 2),
+        "tubes_per_row_est": tubes_per_row,
+        "total_tubes_est": total_tubes,
+        "circuits": circuits,
+        "refrigerant_path_length_m_est": round(ref_path_length_m, 2),
         "tube_type_factor": tube_factor,
         "refrigerant_dp_index": refrig_dp_index,
-        "status": "OK" if q_possible_kw*tube_factor >= capacity_kw and face_status == "OK" and dp_status == "OK" and row_status == "OK" else "CHECK",
-        "engineering_note": "Air-side uses compact-fin j/f screening. For manufacture, replace with exact fin geometry/Wang correlation coefficients and refrigerant distributor/header DP.",
+        "refrigerant_dp_kpa_est": round(ref_dp, 3),
+        "refrigerant_dp_status": ref_dp_status,
+        "effective_evaporating_temp_after_ref_dp_c": round(effective_evap_temp_c, 2),
+        "evaporating_temp_loss_due_to_ref_dp_k": round(evap_temp_drop_k, 3),
+        "condensing_temp_c": round(condensing_temp_c, 2),
+        "target_superheat_k": round(target_superheat_k, 2),
+        "expected_issue_due_to_dp": expected_issue,
+        "status": "OK" if q_possible_kw*tube_factor >= capacity_kw and face_status == "OK" and dp_status == "OK" and row_status == "OK" and ref_dp_status == "OK" else "CHECK",
+        "engineering_note": "Air-side uses compact-fin j/f screening with user geometry. For manufacture, replace with exact fin pattern/Wang coefficients and detailed distributor/header DP from the standalone coil engine.",
     }
 
 
