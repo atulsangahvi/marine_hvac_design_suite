@@ -16,6 +16,93 @@ def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
 
+def water_properties(temp_c: float, seawater: bool = False, salinity_g_kg: float = 35.0) -> Dict[str, float]:
+    """Temperature-dependent liquid water / seawater transport properties.
+
+    v14: replaces the previous fixed constants (e.g. mu = 0.00075 Pa·s regardless of
+    temperature) that skewed Re, Pr and HTC. Fresh-water fits are standard
+    engineering polynomials valid 0-90 °C; seawater corrections follow the
+    Sharqawy/MIT seawater property correlations trend at standard salinity.
+
+    Returns rho [kg/m3], cp [J/kgK], k [W/mK], mu [Pa·s], pr [-].
+    """
+    t = clamp(float(temp_c), 0.0, 95.0)
+    # Fresh water density (Kell-style polynomial, ±0.01%)
+    rho = (999.842594 + 6.793952e-2*t - 9.095290e-3*t*t + 1.001685e-4*t**3
+           - 1.120083e-6*t**4 + 6.536332e-9*t**5)
+    # Dynamic viscosity, Vogel equation fit for water (±1%)
+    mu = 1e-3*math.exp(-3.7188 + 578.919/(t + 273.15 - 137.546))
+    # Thermal conductivity quadratic fit (±1%)
+    k = 0.5706 + 1.756e-3*t - 6.46e-6*t*t
+    # Isobaric specific heat, weak minimum near 35 °C
+    cp = 4217.4 - 3.720283*t + 0.1412855*t*t - 2.654387e-3*t**3 + 2.093236e-5*t**4
+    if seawater:
+        s = clamp(salinity_g_kg, 0.0, 45.0)
+        rho *= 1.0 + 7.6e-4*s            # ≈ +2.7% at S=35
+        mu *= 1.0 + 2.7e-3*s             # ≈ +9.5% at S=35
+        k *= 1.0 - 4.0e-4*s              # slight reduction
+        cp *= 1.0 - 1.55e-3*s            # ≈ 3.99 kJ/kgK at S=35, 25 °C
+    pr = cp*mu/max(k, 1e-12)
+    return {"rho": rho, "cp": cp, "k": k, "mu": mu, "pr": pr}
+
+
+def beatty_katz_lowfin_condensation(k_l: float, rho_l: float, rho_v: float, mu_l: float,
+                                    h_fg: float, t_sat_c: float, wall_temp_c: float,
+                                    root_od_mm: float, fin_od_mm: float, fpi: float,
+                                    fin_thickness_mm: float = 0.25, fin_k_w_mk: float = 45.0,
+                                    rows: int = 1) -> Dict[str, float]:
+    """Beatty-Katz (1948) film condensation on integral low-fin horizontal tubes.
+
+    h_BK = 0.689 [k³ ρ_l(ρ_l-ρ_v) g h'_fg / (μ_l ΔT)]^0.25 * (1/D_eq)^0.25 basis,
+    expressed through the area-weighted equivalent diameter:
+
+        A_eff/D_eq^0.25 = η_f·A_f/L_f^0.25 + A_root/D_root^0.25
+        with L_f = π(D_fin² - D_root²)/(4 D_fin)  (mean fin height dimension)
+
+    The result is returned per unit ENVELOPE area (π·D_fin·L) so it can be used
+    directly with the envelope-basis Uo bookkeeping in the condenser module.
+    Beatty-Katz is conservative for surface-tension-drained tubes (GEWA-CLF /
+    Turbo-C class typically exceed it by 20-60%); a visible calibration
+    multiplier on top remains appropriate for supplier-validated designs.
+    """
+    dT = max(t_sat_c - wall_temp_c, 0.2)
+    d_r = max(root_od_mm, 1.0)/1000.0
+    d_f = max(fin_od_mm, root_od_mm + 0.2)/1000.0
+    fins_per_m = max(fpi, 1.0)/0.0254
+    pitch = 1.0/fins_per_m
+    t_fin = min(max(fin_thickness_mm/1000.0, 1e-5), 0.8*pitch)
+    # Areas per metre of tube
+    a_fin = fins_per_m*(2.0*(math.pi/4.0)*(d_f*d_f - d_r*d_r) + math.pi*d_f*t_fin)
+    a_root = math.pi*d_r*max(pitch - t_fin, 0.0)*fins_per_m
+    a_total = a_fin + a_root
+    a_envelope = math.pi*d_f
+    # Fin efficiency for a short annular fin in condensation (h guessed then refined once)
+    fin_h = 0.5*(d_f - d_r)
+    nusselt_const = 0.689*((k_l**3*rho_l*max(rho_l - rho_v, 1.0)*G*
+                            (h_fg + 0.68*0.0))/(max(mu_l, 1e-12)*dT))**0.25
+    l_fin = math.pi*(d_f*d_f - d_r*d_r)/(4.0*d_f)
+    h_guess = nusselt_const*(1.0/max(l_fin, 1e-6))**0.25
+    eta_f = 1.0
+    for _ in range(2):
+        m = math.sqrt(2.0*max(h_guess, 1.0)/(fin_k_w_mk*t_fin))
+        mL = clamp(m*fin_h, 1e-6, 30.0)
+        eta_f = math.tanh(mL)/mL
+        h_guess = nusselt_const*(1.0/max(l_fin, 1e-6))**0.25
+    # Beatty-Katz area-weighted composite, per unit total area
+    comp = (eta_f*a_fin*(1.0/max(l_fin, 1e-6))**0.25 + a_root*(1.0/d_r)**0.25)/max(a_total, 1e-12)
+    h_total_area = 1.30/1.30*nusselt_const*comp  # per actual (finned) area
+    row_factor = max(int(rows), 1)**(-1.0/6.0)   # inundation milder on finned tubes than plain (Kern N^-1/6)
+    h_envelope = h_total_area*(a_total/max(a_envelope, 1e-12))*row_factor
+    return {
+        "h_envelope_w_m2k": h_envelope,
+        "h_actual_area_w_m2k": h_total_area*row_factor,
+        "fin_efficiency": eta_f,
+        "area_ratio": a_total/max(a_envelope, 1e-12),
+        "row_factor": row_factor,
+        "film_delta_t_k": dT,
+    }
+
+
 def lmtd_counterflow(hot_in: float, hot_out: float, cold_in: float, cold_out: float) -> float:
     dt1 = max(hot_in - cold_out, 0.05)
     dt2 = max(hot_out - cold_in, 0.05)
@@ -128,14 +215,19 @@ def bell_delaware_screening(inp: BellKernInput) -> Dict[str, float]:
         de = max(0.003, 1.27*(p*p - 0.785*inp.tube_od_m*inp.tube_od_m)/inp.tube_od_m)
     re = inp.rho*v*de/max(inp.mu,1e-12)
     pr = inp.cp*inp.mu/max(inp.k,1e-12)
-    # Kern Colburn factor approximation
-    if re < 100:
-        jh = 0.9*max(re,1)**-0.5
-    elif re < 1000:
-        jh = 0.52*re**-0.5
+    # Kern shell-side Nusselt form: Nu = 0.36 Re^0.55 Pr^(1/3) for 2e3 < Re < 1e6.
+    # (v14 fix: the previous exponent -0.55 on jh produced Nu ∝ Re^0.45 and
+    # under-predicted shell HTC by ~2-2.5x at typical Re. Correct Kern jh is
+    # 0.36 Re^-0.45 so that jh*Re = 0.36 Re^0.55.)
+    # Below Re=2000 blend smoothly toward a laminar crossflow floor Nu ≈ 0.6 Re^0.5 Pr^(1/3).
+    if re >= 2000.0:
+        nu_ideal = 0.36*re**0.55*pr**(1/3)
     else:
-        jh = 0.36*re**-0.55
-    h_ideal = jh*re*pr**(1/3)*inp.k/max(de,1e-12)
+        nu_turb_at_2000 = 0.36*2000.0**0.55
+        nu_lam = 0.60*max(re, 1.0)**0.5
+        w = clamp(re/2000.0, 0.0, 1.0)
+        nu_ideal = ((1.0-w)*nu_lam + w*nu_turb_at_2000*(re/2000.0)**0.55)*pr**(1/3)
+    h_ideal = nu_ideal*inp.k/max(de,1e-12)
     # Correction factors (screening equations/trends)
     window_fraction = cut/100.0
     jc = clamp(0.55 + 0.72*(0.25 - abs(window_fraction-0.25)), 0.55, 1.05)

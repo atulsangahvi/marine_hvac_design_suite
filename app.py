@@ -22,7 +22,7 @@ from data.tube_library import filter_tubes, WIELAND_GEWA_C, tube_dataframe
 from data.materials import MATERIALS
 from data.compressor_library import compressor_library_df
 from modules.compressor_map import interpolate_idw, derate_without_map
-from modules.refrigerant_piping import select_line_size, oil_return_guidance, equivalent_length
+from modules.refrigerant_piping import select_line_size, oil_return_guidance, equivalent_length, line_conditions
 from modules.water_system import water_system_table
 from modules.marine_compliance import marine_compliance_checks
 from modules.costing_weight import weight_cost_summary, cost_table
@@ -35,7 +35,7 @@ from modules.manufacturing_package import make_csv_zip
 from modules.design_optimizer import condenser_geometry_optimizer
 from modules.validation_benchmarks import run_benchmarks
 
-APP_VERSION = "marine-chiller-suite-v12-flooded-evaporator-evaporative-condenser"
+APP_VERSION = "marine-chiller-suite-v16-merged-engineering-upgrade"
 
 st.set_page_config(page_title="Marine Chiller Design Suite", layout="wide")
 
@@ -126,7 +126,71 @@ with tabs[0]:
     st.dataframe(op["table"], hide_index=True, use_container_width=True)
 
 with tabs[1]:
-    st.header("Shell-and-tube condenser module")
+    st.header("Condenser module")
+    condenser_submodule = st.radio(
+        "Condenser type",
+        ["Shell-and-tube water-cooled condenser", "Evaporative condenser / closed-circuit condenser"],
+        horizontal=True,
+        key="condenser_submodule_selector"
+    )
+
+    if condenser_submodule.startswith("Evaporative"):
+        st.subheader("Evaporative condenser / closed-circuit condenser")
+        st.caption("This is the same evaporative condenser engine also available in the far-right tab. It is shown here so condenser selection is in one place.")
+        ec1, ec2, ec3, ec4 = st.columns(4)
+        with ec1:
+            ec_db = st.number_input("Entering air DB (°C)", -10.0, 60.0, 35.0, step=0.5, key="ec2_db")
+            ec_wb = st.number_input("Entering air WB (°C)", -10.0, 45.0, 28.0, step=0.5, key="ec2_wb")
+        with ec2:
+            ec_air_mode = st.radio("Air input", ["Face velocity", "Air flow"], horizontal=True, key="ec2_air_mode")
+            ec_face_v = st.number_input("Face velocity (m/s)", 0.5, 6.0, 2.5, step=0.1, key="ec2_face_v")
+            ec_air_flow = st.number_input("Air flow (m³/s)", 0.0, 500.0, 0.0, step=0.5, disabled=(ec_air_mode=="Face velocity"), key="ec2_air_flow")
+        with ec3:
+            ec_face_w = st.number_input("Coil face width (m)", 0.2, 20.0, 1.5, step=0.1, key="ec2_face_w")
+            ec_face_h = st.number_input("Coil face height (m)", 0.2, 20.0, 1.5, step=0.1, key="ec2_face_h")
+        with ec4:
+            ec_tubes = st.number_input("Tube count", 1, 5000, 120, step=4, key="ec2_tubes")
+            ec_tube_len = st.number_input("Tube length (m)", 0.2, 20.0, 1.5, step=0.1, key="ec2_tube_len")
+        with st.expander("Evaporative condenser coil, spray and fan inputs", expanded=True):
+            eca, ecb, ecc, ecd = st.columns(4)
+            with eca:
+                ec_tube_od = st.selectbox("Tube OD", ["5/8 in", "3/4 in", "1 in"], index=1, key="ec2_tube_od")
+                ec_tube_od_mm = {"5/8 in":15.88, "3/4 in":19.05, "1 in":25.4}[ec_tube_od]
+                ec_rows = st.number_input("Rows in air depth", 1, 20, 6, step=1, key="ec2_rows")
+            with ecb:
+                ec_area_override = st.number_input("Coil outside area override (m², 0 = from tubes)", 0.0, 10000.0, 0.0, step=1.0, key="ec2_area")
+                ec_K = st.number_input("Merkel K (kg/s·m², 0 = auto from air mass velocity)", 0.0, 0.30, 0.0, step=0.005, format="%.4f", key="ec2_K")
+            with ecc:
+                ec_U = st.number_input("Overall U dry/wet basis (W/m²K)", 50.0, 3000.0, 450.0, step=25.0, key="ec2_U")
+                ec_spray = st.number_input("Spray rate (m³/h·m² plan)", 1.0, 20.0, 6.0, step=0.5, key="ec2_spray")
+            with ecd:
+                ec_static = st.number_input("Fan static pressure (Pa)", 20.0, 1000.0, 180.0, step=10.0, key="ec2_static")
+                ec_cycles = st.number_input("Cycles of concentration", 1.5, 10.0, 3.0, step=0.5, key="ec2_cycles")
+        evap_cond_res = evaporative_condenser_design(
+            heat_rejection_kw=heat_rejection_kw, refrigerant=ref, condensing_temp_c=cond_c,
+            ambient_db_c=ec_db, ambient_wb_c=ec_wb, coil_area_m2=(ec_area_override or None),
+            tube_od_mm=ec_tube_od_mm, tube_length_m=ec_tube_len, tube_count=int(ec_tubes), rows_depth=int(ec_rows),
+            face_width_m=ec_face_w, face_height_m=ec_face_h,
+            air_flow_m3s=(ec_air_flow if ec_air_mode=="Air flow" and ec_air_flow>0 else None), face_velocity_ms=ec_face_v,
+            spray_rate_m3h_m2=ec_spray, k_merkel_kg_s_m2=(ec_K if ec_K > 0 else None), overall_u_w_m2k_dry_basis=ec_U,
+            fan_static_pa=ec_static, cycles_of_concentration=ec_cycles
+        )
+        c1,c2,c3,c4 = st.columns(4)
+        c1.metric("Required heat rejection", f"{evap_cond_res.get('heat_rejection_required_kw',0):.1f} kW")
+        c2.metric("Possible heat rejection", f"{evap_cond_res.get('heat_rejection_possible_kw',0):.1f} kW")
+        c3.metric("Condensing-WB approach", f"{evap_cond_res.get('condensing_to_wb_approach_k',0):.1f} K")
+        c4.metric("Status", str(evap_cond_res.get('status','')))
+        d1,d2,d3,d4 = st.columns(4)
+        d1.metric("Air flow", f"{evap_cond_res.get('air_flow_m3s',0):.2f} m³/s")
+        d2.metric("Spray water", f"{evap_cond_res.get('spray_water_flow_m3h',0):.2f} m³/h")
+        d3.metric("Make-up water", f"{evap_cond_res.get('makeup_water_m3h',0):.2f} m³/h")
+        d4.metric("Fan + pump", f"{evap_cond_res.get('fan_power_kw',0)+evap_cond_res.get('spray_pump_power_kw',0):.2f} kW")
+        st.dataframe(pd.DataFrame([[k,v] for k,v in evap_cond_res.items()], columns=["Parameter","Value"]), hide_index=True, use_container_width=True)
+        st.info(str(evap_cond_res.get('guidance','')))
+        st.divider()
+        st.caption("Shell-and-tube water-cooled condenser inputs are below. Change the condenser type selector above if you only want that mode.")
+
+    st.subheader("Shell-and-tube water-cooled condenser")
     mode = st.radio("Tube selection mode", ["Manual tube selection", "Auto-select from tube library"], horizontal=True)
     c1,c2,c3,c4 = st.columns(4)
     with c1:
@@ -552,22 +616,32 @@ with tabs[11]:
     st.dataframe(tema_df, hide_index=True, use_container_width=True)
 
     st.subheader("Detailed refrigerant line size screening")
+    # v15: line densities/viscosities auto-computed from the actual refrigerant
+    # states (suction with superheat, discharge gas, subcooled liquid); enter 0 to
+    # use the calculated value or type a manual override.
+    _sc = line_conditions(ref, "suction", evap_c, cond_c)
+    _dc = line_conditions(ref, "discharge", evap_c, cond_c)
+    _lc = line_conditions(ref, "liquid", evap_c, cond_c)
     c1,c2,c3=st.columns(3)
     with c1:
-        suction_density = st.number_input("Suction vapor density kg/m³", 0.1, 200.0, 18.0, step=0.5)
+        suction_density = st.number_input(f"Suction density kg/m³ (calc {_sc['rho']:.1f}, 0=auto)", 0.0, 200.0, 0.0, step=0.5)
         suction_len = st.number_input("Suction actual length m", 1.0, 200.0, 12.0, step=1.0)
     with c2:
-        discharge_density = st.number_input("Discharge vapor density kg/m³", 0.1, 300.0, 45.0, step=0.5)
+        discharge_density = st.number_input(f"Discharge density kg/m³ (calc {_dc['rho']:.1f}, 0=auto)", 0.0, 300.0, 0.0, step=0.5)
         discharge_len = st.number_input("Discharge actual length m", 1.0, 200.0, 8.0, step=1.0)
     with c3:
-        liquid_density = st.number_input("Liquid density kg/m³", 300.0, 1400.0, 1050.0, step=10.0)
+        liquid_density = st.number_input(f"Liquid density kg/m³ (calc {_lc['rho']:.0f}, 0=auto)", 0.0, 1400.0, 0.0, step=10.0)
         liquid_len = st.number_input("Liquid actual length m", 1.0, 200.0, 10.0, step=1.0)
-    st.write("Suction line candidates")
-    st.dataframe(select_line_size(mdot if 'mdot' in globals() else 0.1, suction_density, 6, 14, 25, equivalent_length(suction_len)), hide_index=True, use_container_width=True)
-    st.write("Discharge line candidates")
-    st.dataframe(select_line_size(mdot if 'mdot' in globals() else 0.1, discharge_density, 8, 18, 35, equivalent_length(discharge_len)), hide_index=True, use_container_width=True)
+    suction_density = suction_density if suction_density > 0 else _sc['rho']
+    discharge_density = discharge_density if discharge_density > 0 else _dc['rho']
+    liquid_density = liquid_density if liquid_density > 0 else _lc['rho']
+    _m = mdot if 'mdot' in globals() else 0.1
+    st.write("Suction line candidates (includes equivalent SST loss)")
+    st.dataframe(select_line_size(_m, suction_density, 6, 14, 25, equivalent_length(suction_len), mu=_sc['mu'], ref=ref, line="suction", evap_c=evap_c, cond_c=cond_c), hide_index=True, use_container_width=True)
+    st.write("Discharge line candidates (includes equivalent SCT loss)")
+    st.dataframe(select_line_size(_m, discharge_density, 8, 18, 35, equivalent_length(discharge_len), mu=_dc['mu'], ref=ref, line="discharge", evap_c=evap_c, cond_c=cond_c), hide_index=True, use_container_width=True)
     st.write("Liquid line candidates")
-    st.dataframe(select_line_size(mdot if 'mdot' in globals() else 0.1, liquid_density, 0.4, 1.5, 35, equivalent_length(liquid_len), mu=0.00025), hide_index=True, use_container_width=True)
+    st.dataframe(select_line_size(_m, liquid_density, 0.4, 1.5, 35, equivalent_length(liquid_len), mu=_lc['mu']), hide_index=True, use_container_width=True)
     st.write("Oil return guidance")
     st.json(oil_return_guidance(compressor_type, suction_v if 'suction_v' in globals() else 8.0, 3.0))
 
@@ -616,7 +690,7 @@ with tabs[13]:
             ec_rows = st.number_input("Evap condenser rows in air depth", 1, 20, 6, step=1)
         with ecb:
             ec_area_override = st.number_input("Coil outside area override (m², 0 = from tubes)", 0.0, 10000.0, 0.0, step=1.0)
-            ec_K = st.number_input("Merkel K (kg/s·m²)", 0.0001, 0.0100, 0.0015, step=0.0001, format="%.4f")
+            ec_K = st.number_input("Merkel K (kg/s·m², 0 = auto from air mass velocity)", 0.0, 0.30, 0.0, step=0.005, format="%.4f")
         with ecc:
             ec_U = st.number_input("Overall U dry/wet basis (W/m²K)", 50.0, 3000.0, 450.0, step=25.0)
             ec_spray = st.number_input("Spray rate (m³/h·m² plan)", 1.0, 20.0, 6.0, step=0.5)
@@ -629,7 +703,7 @@ with tabs[13]:
         tube_od_mm=ec_tube_od_mm, tube_length_m=ec_tube_len, tube_count=int(ec_tubes), rows_depth=int(ec_rows),
         face_width_m=ec_face_w, face_height_m=ec_face_h,
         air_flow_m3s=(ec_air_flow if ec_air_mode=="Air flow" and ec_air_flow>0 else None), face_velocity_ms=ec_face_v,
-        spray_rate_m3h_m2=ec_spray, k_merkel_kg_s_m2=ec_K, overall_u_w_m2k_dry_basis=ec_U,
+        spray_rate_m3h_m2=ec_spray, k_merkel_kg_s_m2=(ec_K if ec_K > 0 else None), overall_u_w_m2k_dry_basis=ec_U,
         fan_static_pa=ec_static, cycles_of_concentration=ec_cycles
     )
     c1,c2,c3,c4 = st.columns(4)

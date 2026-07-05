@@ -39,8 +39,26 @@ def interpolate_idw(df: pd.DataFrame, evap_c: float, cond_c: float, power_correc
     out['nearest_map_distance_k'] = float(dist.min())
     return out
 
-def derate_without_map(rated_kw: float, rated_power_kw: float, evap_c: float, cond_c: float, rated_evap_c: float, rated_cond_c: float, compressor_type: str) -> dict:
-    """Fallback when no manufacturer map is available. Use only for early screening."""
+def derate_without_map(rated_kw: float, rated_power_kw: float, evap_c: float, cond_c: float, rated_evap_c: float, rated_cond_c: float, compressor_type: str, refrigerant: str | None = None) -> dict:
+    """Fallback when no manufacturer map is available. Use only for early screening.
+
+    v15: when the refrigerant is known and CoolProp is available, the derating now
+    comes from the thermodynamic cycle model in modules.compressor (real suction
+    density, eta_v(PR), eta_is(PR)) calibrated to the rated point. The old linear
+    %/K slopes remain only as a last resort.
+    """
+    if refrigerant:
+        try:
+            from .compressor import cycle_operating_point
+            cal = cycle_operating_point(refrigerant, evap_c, cond_c, compressor_type=compressor_type,
+                                        rated_cooling_kw=rated_kw, rated_evap_c=rated_evap_c, rated_cond_c=rated_cond_c)
+            if not cal.get('error'):
+                return {'status': 'CYCLE-MODEL DERATE', 'cooling_kw': cal['cooling_kw'], 'power_kw': cal['power_kw'],
+                        'heat_rejection_kw': cal['heat_rejection_kw'], 'cop': cal['cop'],
+                        'pressure_ratio': cal['pressure_ratio'], 'eta_is': cal['eta_is'], 'eta_vol': cal['eta_vol'],
+                        'discharge_temp_c': cal['discharge_temp_c']}
+        except Exception:
+            pass
     comp = (compressor_type or '').lower()
     cond_slope = 0.018 if 'scroll' in comp else 0.025 if 'recip' in comp or 'piston' in comp else 0.015
     evap_slope = 0.030 if 'scroll' in comp else 0.035 if 'recip' in comp or 'piston' in comp else 0.020

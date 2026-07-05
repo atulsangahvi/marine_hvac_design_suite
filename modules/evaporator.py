@@ -40,12 +40,17 @@ def glycol_props(glycol_pct: float = 0.0, temp_c: float = 7.0, fluid: str = "Wat
     The formula is smooth and conservative. For final design use ASHRAE tables or
     CoolProp incompressible fluid properties.
     """
+    # v14: water baseline now uses temperature-dependent correlations (Kell density,
+    # Vogel viscosity, quadratic k, quartic cp) instead of linear guesses. The old
+    # exp(-0.033·ΔT) viscosity over-predicted chilled-water viscosity trends and the
+    # density slope had the wrong sign below 20 °C.
+    from .correlations import water_properties
     g = _clamp(glycol_pct, 0.0, 60.0) / 100.0
-    rho = 1000.0 * (1.0 + 0.09 * g - 0.00025 * (temp_c - 20.0))
-    cp = 4180.0 * (1.0 - 0.18 * g)
-    k = 0.60 * (1.0 - 0.38 * g)
-    mu_water = 0.001002 * math.exp(-0.033 * (temp_c - 20.0))
-    mu = mu_water * math.exp(4.2 * g)
+    w = water_properties(temp_c, seawater=False)
+    rho = w["rho"] * (1.0 + 0.135 * g)               # EG density ratio ~1.135 at 100% eq.
+    cp = w["cp"] * (1.0 - 0.42 * g + 0.06 * g * g)   # ASHRAE EG cp trend
+    k = w["k"] * (1.0 - 0.55 * g + 0.12 * g * g)     # EG conductivity trend
+    mu = w["mu"] * math.exp(4.2 * g * (1.0 + 0.012 * max(20.0 - temp_c, 0.0) * g))
     pr = cp * mu / max(k, 1e-12)
     return {"rho": rho, "cp": cp, "k": k, "mu": mu, "pr": pr}
 
@@ -141,8 +146,12 @@ def dx_refrigerant_tube_evaporation(ref: str, evap_temp_c: float, mdot_ref_kg_s:
     flow_area = max(tubes_per_pass, 1) * math.pi * tube_id_m**2 / 4.0
     G = mdot_ref_kg_s / max(flow_area, 1e-12)
     q_flux = heat_kw * 1000.0 / max(area_i_m2, 1e-12)
-    h_liq = gnielinski_htc(mdot_ref_kg_s, sp["rho_l"], sp["mu_l"], sp["k_l"], sp["cp_l"], tube_id_m, flow_area, length_m)
     x_avg = _clamp((x_in + x_out) / 2.0, 0.02, 0.98)
+    # v14: Shah's correlation defines h_l on the LIQUID-FRACTION basis, i.e. the
+    # superficial liquid flow G(1-x) flowing alone: Re_l = G(1-x)·d/μ_l. The
+    # previous code used total flow as liquid, which mis-states the multiplier
+    # basis and skews h_tp with quality.
+    h_liq = gnielinski_htc(mdot_ref_kg_s * (1.0 - x_avg), sp["rho_l"], sp["mu_l"], sp["k_l"], sp["cp_l"], tube_id_m, flow_area, length_m)
     evap = shah_like_evaporation_multiplier(x_avg, q_flux, G, sp["h_fg"], sp["rho_l"], sp["rho_v"], h_liq["h"])
 
     # liquid-only and vapor-only friction dp basis over full path
@@ -423,15 +432,21 @@ def airside_wang_style_htc_dp(face_velocity: float, rows: int, fpi: float, tube_
     cp = 1006.0
     k = 0.026
     pr = cp*mu/k
-    re_d = rho*face_velocity*tube_od_m/max(mu,1e-12)
+    # v14: compact heat-exchanger j/f data (Kays-London, Wang) are defined at the
+    # velocity through the MINIMUM free-flow area, not the face velocity. Using
+    # face velocity under-predicted both HTC and ΔP by (1/σ) and (1/σ²) factors.
+    sigma = _clamp(0.72 - 0.010*(fpi-12.0) - fin_thickness_m*fpi/0.0254, 0.35, 0.85)
+    v_max = face_velocity / max(sigma, 0.1)
+    re_d = rho*v_max*tube_od_m/max(mu,1e-12)
     # j decreases with Re and increases slightly with more fins/rows
     j = 0.108 * max(re_d, 1.0)**(-0.29) * (fpi/12.0)**0.12 * (rows/4.0)**0.08
-    h = j * rho * face_velocity * cp / max(pr**(2/3), 1e-12)
+    h = j * rho * v_max * cp / max(pr**(2/3), 1e-12)
     # friction factor, conservative for wavy/louvered fin packs
     f = 0.33 * max(re_d, 1.0)**(-0.20) * (fpi/12.0)**0.35 * (rows/4.0)**0.25
-    sigma = _clamp(0.72 - 0.010*(fpi-12.0) - fin_thickness_m*fpi/0.0254, 0.35, 0.85)
-    dp = (4.0*f*rows/max(sigma,0.1) + (1.0/sigma**2 - 1.0)) * 0.5*rho*face_velocity**2
-    return {"air_re_d": re_d, "air_j": j, "air_f": f, "air_htc_w_m2k": h, "air_dp_pa": dp, "free_area_ratio": sigma}
+    # Core friction + entrance/exit acceleration, both on max-velocity dynamic head
+    dp = (4.0*f*rows + (1.0/sigma**2 - 1.0)*sigma**2) * 0.5*rho*v_max**2
+    return {"air_re_d": re_d, "air_j": j, "air_f": f, "air_htc_w_m2k": h, "air_dp_pa": dp,
+            "free_area_ratio": sigma, "air_v_max_ms": v_max}
 
 
 def air_cooled_dx_coil_screening(capacity_kw: float, air_flow_m3s: float, db_in_c: float, wb_in_c: float,
@@ -572,12 +587,15 @@ def air_cooled_dx_coil_screening(capacity_kw: float, air_flow_m3s: float, db_in_
 
 def correlation_audit_table() -> pd.DataFrame:
     rows = [
-        ["Air coil air-side HTC", "v7 uses Wang/Kays-London style j-factor screening", "Medium", "Needs exact fin pattern coefficients for final manufacture"],
-        ["Air coil air-side DP", "v7 uses compact-fin f-factor and free-area estimate", "Medium", "Needs exact fin collar/louver/wavy geometry"],
+        ["Air coil air-side HTC", "v14: j-factor now applied at minimum-free-area velocity (Kays-London basis)", "Medium", "Needs exact fin pattern coefficients for final manufacture"],
+        ["Air coil air-side DP", "v14: core friction + entrance/exit losses at max velocity", "Medium", "Needs exact fin collar/louver/wavy geometry"],
         ["Air coil refrigerant evaporation", "Only tube-type factor in suite; detailed legacy code has Shah-like modules", "Low-Medium", "Integrate full row-by-row refrigerant side next"],
-        ["Shell-tube water/glycol shell side", "v8 uses shared Bell-Delaware/Kern screening with Jc/Jl/Jb/Jr factors", "Medium", "Enter actual clearances, seal strips and window geometry for final design"],
-        ["Shell-tube refrigerant tube side", "v8 uses correct Bo=q''/(G*hfg), Shah-style multiplier and MSH DP", "Medium", "Validate against refrigerant-specific experimental data"],
-        ["Flooded shell-side boiling", "v8 uses Cooper pool-boiling screening", "Medium", "Add Gorenflo/Stephan alternatives and enhanced-tube calibration"],
+        ["Shell-tube water/glycol shell side", "v14: corrected Kern Nu=0.36 Re^0.55 (previous exponent bug halved HTC) with Jc/Jl/Jb/Jr factors", "Medium", "Enter actual clearances, seal strips and window geometry for final design"],
+        ["Shell-tube refrigerant tube side", "v14: Shah multiplier on correct liquid-fraction Re basis, MSH DP", "Medium", "Validate against refrigerant-specific experimental data"],
+        ["Flooded shell-side boiling", "v14: Cooper pool boiling solved self-consistently with q''=U*LMTD fixed point", "Medium", "Add Gorenflo/Stephan alternatives and enhanced-tube calibration"],
+        ["Condenser tube-side water", "v14: Gnielinski with T-dependent water/seawater properties and library id_enhancement", "Medium-High", "Confirm internal-rib enhancement against supplier datasheet"],
+        ["Condenser shell-side condensation", "v14: Beatty-Katz low-fin model on envelope basis with iterated film deltaT", "Medium", "Calibrate surface-tension enhancement vs supplier/test data"],
+        ["Evaporative condenser", "v14: NTU-effectiveness Merkel with two-resistance film temperature solution; K estimated from air mass velocity", "Medium", "Calibrate K and coil U against a vendor selection"],
     ]
     return pd.DataFrame(rows, columns=["Area", "Current method", "Confidence", "Remaining work"])
 

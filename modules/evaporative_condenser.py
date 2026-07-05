@@ -77,7 +77,7 @@ def evaporative_condenser_design(
     air_flow_m3s: Optional[float] = None,
     face_velocity_ms: float = 2.5,
     spray_rate_m3h_m2: float = 6.0,
-    k_merkel_kg_s_m2: float = 0.0015,
+    k_merkel_kg_s_m2: Optional[float] = None,
     overall_u_w_m2k_dry_basis: float = 450.0,
     fan_static_pa: float = 180.0,
     fan_efficiency: float = 0.60,
@@ -96,24 +96,71 @@ def evaporative_condenser_design(
     rho_air = air_density(ambient_db_c, w_in, pressure_kpa)
     m_air = rho_air * air_flow_m3s
 
-    # Wet-bulb approach drives evaporative condenser performance. Coil surface is
-    # near condensing temperature; spray water/air film temperature approximated by
-    # condensing temperature minus a small surface approach.
-    surface_temp_c = max(ambient_wb_c + 1.0, condensing_temp_c - 3.0)
+    # v14: when no calibrated Merkel/mass-transfer coefficient is supplied, estimate
+    # it from air mass velocity through the wetted bundle (Parker & Treybal-style
+    # hD = C·G^0.9, with G at the minimum free area, σ ≈ 0.55 for a wet plain-tube
+    # bank). The previous fixed default of 0.0015 kg/s·m² was 1-2 orders of
+    # magnitude below published evaporative-condenser data and made every realistic
+    # selection report SHORT. This estimate must still be calibrated against a
+    # vendor selection before manufacture.
+    if k_merkel_kg_s_m2 is None or k_merkel_kg_s_m2 <= 0:
+        g_face = m_air / face_area
+        g_max = g_face / 0.55
+        # Published Parker-Treybal data span roughly hD = 0.05-0.16 kg/s·m² for
+        # G_max = 1.4-5 kg/s·m²; cap the estimate inside that envelope.
+        k_merkel_kg_s_m2 = max(0.02, min(0.16, 0.049 * g_max ** 0.905))
+        merkel_k_source = "estimated from air mass velocity (Parker-Treybal form)"
+    else:
+        merkel_k_source = "user/vendor-calibrated input"
+
     h_air_in = enthalpy_air(ambient_db_c, w_in)
-    h_sat_surface = sat_air_enthalpy(surface_temp_c, pressure_kpa)
-    driving_h = max(0.5, h_sat_surface - h_air_in)  # kJ/kgda
 
     tube_area = math.pi * (tube_od_mm/1000.0) * tube_length_m * max(1, int(tube_count))
     area = coil_area_m2 if coil_area_m2 and coil_area_m2 > 0 else tube_area
-    # two parallel performance estimates: evaporative Merkel basis and dry/wet UA basis
-    q_merkel = k_merkel_kg_s_m2 * area * driving_h
-    # Equivalent recirculating spray water warms above WB; approximate 4 K rise for LMTD check
-    spray_water_in = ambient_wb_c + 2.0
-    spray_water_out = min(condensing_temp_c - 1.0, spray_water_in + 4.0)
+
+    # v14: two coupled resistances solved simultaneously instead of a guessed
+    # "condensing minus 3 K" film temperature and a single-point enthalpy driving
+    # force (which let predicted duty exceed what the air stream could physically
+    # absorb).
+    #
+    #   Inside path:  q = U_i · A · (T_cond - T_film)          [refrigerant→tube→spray film]
+    #   Outside path: q = ε · ṁ_air · (h_sat(T_film) - h_in)   [Merkel, NTU-effectiveness]
+    #   with NTU = K·A / ṁ_air  and  ε = 1 - exp(-NTU)
+    #
+    # The NTU form correctly caps the air-side enthalpy pickup: as area grows, the
+    # leaving air approaches saturation at the film temperature instead of q growing
+    # without bound. T_film is found by bisection between WB and condensing temp.
+    ntu = k_merkel_kg_s_m2 * area / max(m_air, 1e-9)
+    eff = 1.0 - math.exp(-min(ntu, 30.0))
+
+    def q_air_kw(t_film: float) -> float:
+        return eff * m_air * max(sat_air_enthalpy(t_film, pressure_kpa) - h_air_in, 0.0)
+
+    def q_ref_kw(t_film: float) -> float:
+        return overall_u_w_m2k_dry_basis * area * max(condensing_temp_c - t_film, 0.0) / 1000.0
+
+    lo, hi_t = ambient_wb_c + 0.05, condensing_temp_c - 0.05
+    surface_temp_c = 0.5 * (lo + hi_t)
+    if hi_t > lo:
+        for _ in range(60):
+            mid = 0.5 * (lo + hi_t)
+            # imbalance: inside delivery minus outside removal; decreasing in T_film
+            if q_ref_kw(mid) > q_air_kw(mid):
+                lo = mid
+            else:
+                hi_t = mid
+            if hi_t - lo < 0.01:
+                break
+        surface_temp_c = 0.5 * (lo + hi_t)
+    q_possible = min(q_ref_kw(surface_temp_c), q_air_kw(surface_temp_c)) if hi_t > lo else 0.0
+    h_sat_surface = sat_air_enthalpy(surface_temp_c, pressure_kpa)
+    driving_h = max(0.0, h_sat_surface - h_air_in)
+    q_merkel = q_air_kw(surface_temp_c)
+    q_ua = q_ref_kw(surface_temp_c)
+    # Spray-water temperatures reported around the solved film temperature
+    spray_water_in = max(ambient_wb_c + 1.0, surface_temp_c - 2.0)
+    spray_water_out = min(condensing_temp_c - 0.5, surface_temp_c + 2.0)
     lmtd = _lmtd_const_hot(condensing_temp_c, spray_water_in, spray_water_out)
-    q_ua = overall_u_w_m2k_dry_basis * area * lmtd / 1000.0
-    q_possible = min(q_merkel, q_ua) if q_merkel > 0 else q_ua
 
     spray_flow_m3h = spray_rate_m3h_m2 * face_area
     evap_loss_m3h = 0.00153 * q  # approx m3/h evaporation per kW heat rejection
@@ -168,7 +215,11 @@ def evaporative_condenser_design(
         "air_inlet_h_kj_kgda": round(h_air_in, 3),
         "saturated_surface_h_kj_kgda": round(h_sat_surface, 3),
         "enthalpy_driving_force_kj_kgda": round(driving_h, 3),
+        "solved_spray_film_temp_c": round(surface_temp_c, 2),
+        "merkel_ntu": round(ntu, 3),
+        "merkel_air_effectiveness": round(eff, 4),
         "merkel_k_kg_s_m2": round(k_merkel_kg_s_m2, 6),
+        "merkel_k_source": merkel_k_source,
         "q_merkel_possible_kw": round(q_merkel, 3),
         "q_ua_possible_kw": round(q_ua, 3),
         "lmtd_spray_water_k": round(lmtd, 3),

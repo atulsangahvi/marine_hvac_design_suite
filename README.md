@@ -1,8 +1,8 @@
-# Marine Chiller Design Suite v8
+# Marine Chiller Design Suite v16
 
 This build continues Milestone 1 (engineering calculation core) and Milestone 2 (engineering databases).
 
-## What is new in v8
+## What is new in v16
 
 ### Milestone 1 — Engineering core
 
@@ -85,7 +85,7 @@ pytest -q
 
 ## Important engineering note
 
-This v8 package is a meaningful step toward Milestone 1 and 2, but it is not yet a fully validated manufacturing design package. Before manufacturing, benchmark the outputs against supplier software, test data, TEMA/ASME mechanical design, vibration checks and class-society requirements.
+This v16 package is a meaningful step toward Milestone 1 and 2, but it is not yet a fully validated manufacturing design package. Before manufacturing, benchmark the outputs against supplier software, test data, TEMA/ASME mechanical design, vibration checks and class-society requirements.
 
 ## Suggested next v9 work
 
@@ -152,7 +152,7 @@ The evaporator tab now has expanded inputs and outputs for both shell-and-tube a
 
 These calculations are still screening calculations. For production coil manufacture, use the standalone detailed air-cooled evaporator engine and validate against manufacturer/test data.
 
-## v12 update — flooded evaporator and evaporative condenser
+## v13 update — flooded evaporator, evaporative condenser, and condenser-type selector
 
 This version adds two major modules.
 
@@ -209,3 +209,134 @@ Both new modules are **preliminary design/screening tools**. Before manufacturin
 - Refrigerant charge and oil return.
 - Evaporative condenser Merkel K and U values against a vendor selection.
 - Fan, spray nozzles, drift eliminator, casing and water-treatment design.
+
+
+## v14 update — engineering accuracy overhaul
+
+This version corrects several correlation-level errors and replaces guessed values
+with solved ones. Expect materially different (more accurate) numbers vs v13.
+
+### Corrections (bugs in previous correlations)
+
+1. **Kern shell-side exponent bug.** The shell-side Colburn factor used
+   `jh = 0.36 Re^-0.55`, producing `Nu ∝ Re^0.45` instead of the standard Kern
+   `Nu = 0.36 Re^0.55 Pr^(1/3)`. This under-predicted shell-side water/glycol HTC
+   by roughly 2-2.5x at typical Reynolds numbers. Fixed with a continuous blend
+   into a laminar crossflow floor below Re = 2000.
+2. **Air-coil velocity basis.** Compact-fin j/f data are defined at the velocity
+   through the minimum free-flow area; the code used face velocity, under-stating
+   both air-side HTC and pressure drop by (1/σ) and (1/σ²) class factors.
+3. **Shah multiplier basis.** The two-phase evaporation multiplier now uses the
+   liquid-fraction Reynolds number G(1-x)·d/μ as Shah defines it, instead of
+   total flow treated as liquid.
+4. **Flooded-charge geometry.** Liquid level as % of shell diameter is now
+   converted to wetted cross-section by the circular-segment formula, and only
+   submerged tubes displace liquid. Vapor-space mass is included.
+
+### Replaced assumptions with solved physics
+
+5. **Condensation film ΔT is iterated.** Nusselt/Beatty-Katz condensation h scales
+   with ΔT_film^(-1/4); the film ΔT is now solved from the resistance split rather
+   than guessed as half the total ΔT.
+6. **Beatty-Katz low-fin condensation.** Integral low-fin tubes (GEWA-C/CLF/CPL,
+   Datang) now use the Beatty-Katz area-weighted model on the envelope-area basis,
+   including fin efficiency and Kern N^(-1/6) inundation. The user multiplier now
+   calibrates surface-tension enhancement above Beatty-Katz (typically 1.0-1.6 for
+   GEWA-CLF class) instead of scaling bare plain-tube Nusselt.
+7. **Cooper pool boiling fixed point.** Flooded evaporator boiling h depends on
+   heat flux, and flux depends on U. The module now solves q'' = U(q'')·LMTD
+   instead of assuming the required duty is transferred, so oversized and
+   undersized bundles are no longer mis-rated.
+8. **Evaporative condenser two-resistance model.** The spray-film temperature is
+   solved by balancing refrigerant→film UA against an NTU-effectiveness Merkel
+   air side (ε = 1 - exp(-K·A/ṁ_air)). Predicted duty can no longer exceed the
+   air stream's enthalpy absorption capacity, and the fabricated "condensing minus
+   3 K" film temperature and 4 K spray-water rise are gone. Merkel K defaults to a
+   Parker-Treybal style estimate from air mass velocity (capped 0.02-0.16 kg/s·m²)
+   when no vendor-calibrated value is entered (enter 0 in the UI for auto).
+
+### Property and data improvements
+
+9. **Temperature-dependent water/seawater properties** (Kell density, Vogel
+   viscosity, quadratic conductivity, quartic cp, Sharqawy-style seawater
+   corrections) replace fixed constants throughout the condenser and improved
+   the water/glycol baseline in the evaporator modules.
+10. **Gnielinski tube-side HTC in the condenser** replaces Dittus-Boelter with a
+    hard laminar jump at Re = 3000, handling the transition region properly.
+11. **Tube library internal enhancement.** GEWA-C/CLF entries carry
+    `id_enhancement = 1.9` for the ribbed bore (typical published range 1.7-2.2x)
+    plus fpi/fin-thickness for Beatty-Katz. These are engineering estimates —
+    confirm against the supplier datasheet before manufacture.
+12. **Tube ΔP** uses Swamee-Jain friction with drawn-tube roughness instead of
+    smooth-tube Blasius.
+
+### Benchmark basis fix
+
+The HSTAR/Wieland GEWA-CLF benchmark now runs at the vendor RATING fouling basis
+(near-clean) instead of design fouling, and reports the implied LMTD needed for
+the published targets so internal inconsistencies in the target set are visible.
+Uo agreement improved from about -65% to about -18% with a conservative 1.4x
+enhancement over Beatty-Katz; the residual is consistent with GEWA-CLF exceeding
+Beatty-Katz by more than the conservative calibration applied.
+
+### Still required before manufacture
+
+All modules remain screening tools. Validate enhanced-tube performance, fouling
+plan, refrigerant charge/oil return, vibration, TEMA/ASME mechanical design and
+class-society requirements against supplier data and test results.
+
+
+## v15 update — compressor cycle model, three-zone condenser, piping states
+
+### Compressor: thermodynamic cycle model replaces linear derating
+
+`modules/compressor.py` now has `cycle_operating_point()`: a real single-stage
+vapor-compression model. Capacity comes from suction density x volumetric
+efficiency x refrigeration effect (CoolProp properties), power from the
+isentropic enthalpy rise divided by an eta_is(pressure-ratio) curve typical of
+each machine class (scroll / recip / screw). Swept volume is calibrated from the
+entered design point. `estimate_operating_point()` (the condenser balance sweep)
+and `compressor_map.derate_without_map()` both use it automatically, keeping the
+old linear %/K slopes only as a CoolProp-less fallback. Discharge temperature,
+eta_is, eta_v and pressure ratio are reported for audit.
+
+### Condenser: three-zone (desuperheat / condense / subcool) analysis
+
+`evaluate_condenser()` now splits the duty into desuperheating, condensing and
+subcooling zones from real enthalpies (blend-safe for R407C/R404A), allocates the
+counterflow water temperature rise per zone, applies zone HTCs (gas and liquid
+single-phase zones are far weaker than film condensation) and reports the area
+each zone needs. `q_possible_kw` is the stricter of the zoned and single-zone
+results; both are reported, plus a full zone breakdown. New optional inputs:
+`discharge_temp_c` (default condensing + 25 K) and `subcool_k` (default 3 K).
+Also fixed a latent bug in the LMTD helper that returned huge negative values
+when the two ΔTs were passed in descending order.
+
+### Refrigerant piping
+
+- EN 12735-style copper wall-thickness table replaces the guessed ID formula
+  (up to ~1.3 mm error on large sizes).
+- `line_conditions()` computes density and viscosity at the true line state
+  (suction with superheat, discharge gas, subcooled liquid). Previously one
+  vapor viscosity (1.2e-5 Pa.s) was applied to every line, understating
+  liquid-line friction ~15x. The app auto-fills these (enter 0 for auto).
+- Suction/discharge tables now include the equivalent saturation-temperature
+  loss of the line pressure drop, so pipe sizing can be judged in kelvin of
+  lost SST/SCT rather than only kPa.
+
+All v14 accuracy notes still apply; these remain screening tools requiring
+supplier/test validation before manufacture.
+
+
+## v16 update — merged and corrected Claude v15 improvements
+
+This build keeps the useful v15 engineering additions but fixes integration issues found during testing.
+
+Retained and corrected:
+- compressor operating-point cycle model with approximate fallback when CoolProp is unavailable;
+- condenser three-zone desuperheat / condense / subcool reporting, with conservative fallback split if CoolProp fails;
+- refrigerant piping state-property improvements;
+- flooded evaporator and evaporative condenser modules retained;
+- condenser type selector retained in the condenser tab.
+
+Validation status: repository tests pass in the build environment. This remains an engineering design/screening suite and still needs supplier/manufacturer validation before production release.

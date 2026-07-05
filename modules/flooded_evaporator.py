@@ -93,25 +93,60 @@ def flooded_evaporator_design(
     shell_len_m = tube_length_m + shell_length_allowance_m
 
     sat = _sat_props(refrigerant, evap_temp_c)
-    q_flux = capacity_kw * 1000.0 / max(area_o, 1e-12)
     pr_red = sat["p_sat"] / max(sat["p_crit"], 1.0)
-    h_pool = cooper_pool_boiling(pr_red, sat["mw"], q_flux)
-    h_ref = max(600.0, min(25000.0, h_pool * max(1.0, enhanced_boiling_multiplier)))
     r_wall_o = do * math.log(do / di) / max(2.0 * tube_k_w_mk, 1e-12)
-    Uo = 1.0 / max(1.0/h_ref + fouling_ref_m2k_w + r_wall_o + (do/di)*(1.0/h_w["h"] + fouling_water_m2k_w), 1e-12)
 
     dt1 = max(chw_in_c - evap_temp_c, 0.1)
     dt2 = max(chw_out_c - evap_temp_c, 0.1)
     lmtd = (dt1 - dt2) / math.log(dt1 / dt2) if abs(dt1 - dt2) > 1e-9 else dt1
+
+    # v14: Cooper pool-boiling HTC depends on the heat flux (h ∝ q''^0.67), and the
+    # achievable flux depends on U — a circular dependency the previous code broke
+    # by simply assuming the REQUIRED duty is transferred. That over-stated h and U
+    # for undersized bundles and under-stated them for oversized ones. Solve the
+    # fixed point q'' = U(q'')·LMTD instead (converges in a few iterations because
+    # the exponent is < 1).
+    q_flux = max(capacity_kw * 1000.0 / max(area_o, 1e-12), 500.0)
+    h_pool = cooper_pool_boiling(pr_red, sat["mw"], q_flux)
+    Uo = 1000.0
+    for _ in range(20):
+        h_pool = cooper_pool_boiling(pr_red, sat["mw"], q_flux)
+        h_ref = max(600.0, min(25000.0, h_pool * max(1.0, enhanced_boiling_multiplier)))
+        Uo = 1.0 / max(1.0/h_ref + fouling_ref_m2k_w + r_wall_o + (do/di)*(1.0/h_w["h"] + fouling_water_m2k_w), 1e-12)
+        q_flux_new = max(Uo * lmtd, 500.0)
+        if abs(q_flux_new - q_flux) < 0.005 * q_flux:
+            q_flux = q_flux_new
+            break
+        q_flux = 0.5 * (q_flux + q_flux_new)
+    h_ref = max(600.0, min(25000.0, h_pool * max(1.0, enhanced_boiling_multiplier)))
+
     q_possible = Uo * area_o * lmtd / 1000.0
     approach_leaving = chw_out_c - evap_temp_c
 
+    # v14: the liquid level is a fraction of shell DIAMETER, which is NOT the same
+    # as a fraction of shell VOLUME — the correct wetted cross-section is a circular
+    # segment. The previous linear approximation over-stated charge at low levels
+    # and under-stated it at high levels. Tube displacement is now also limited to
+    # the tubes actually submerged below the liquid level.
     shell_vol = math.pi * shell_id_m**2 / 4.0 * shell_len_m
-    bundle_displacement = tube_count * math.pi * do**2 / 4.0 * tube_length_m
     liquid_level_frac = max(0.25, min(0.85, liquid_level_pct_shell_dia/100.0))
-    active_liq_vol = max(0.0, shell_vol * liquid_level_frac - bundle_displacement * liquid_level_frac)
-    refrigerant_charge_kg = active_liq_vol * sat["rho_l"]
-    vapor_space_pct = (1.0 - liquid_level_frac) * 100.0
+    R = shell_id_m / 2.0
+    h_liq = liquid_level_frac * shell_id_m                     # liquid depth from bottom
+    theta = 2.0 * math.acos(max(-1.0, min(1.0, (R - h_liq) / R)))
+    seg_area = 0.5 * R * R * (theta - math.sin(theta))         # wetted cross-section
+    liquid_vol_gross = seg_area * shell_len_m
+    liquid_area_frac = seg_area / max(math.pi * R * R, 1e-12)
+    # Bundle sits low in the shell; assume tubes are uniformly distributed over the
+    # bundle circle and submerged in proportion to the liquid depth over the bundle.
+    bundle_bottom = max(0.0, R - bundle_od_m / 2.0)            # gap below bundle
+    submerged_frac = max(0.0, min(1.0, (h_liq - bundle_bottom) / max(bundle_od_m, 1e-6)))
+    bundle_displacement = tube_count * math.pi * do**2 / 4.0 * tube_length_m * submerged_frac
+    active_liq_vol = max(0.0, liquid_vol_gross - bundle_displacement)
+    # Add ~15% for vapor bubbles displacing liquid in the boiling zone (void) as a
+    # deduction, and ~10% back for liquid in level legs/piping — net small effect.
+    refrigerant_charge_kg = active_liq_vol * sat["rho_l"] * 0.90 + \
+        (shell_vol - liquid_vol_gross) * sat["rho_v"]          # include vapor space mass
+    vapor_space_pct = (1.0 - liquid_area_frac) * 100.0
 
     # flooded evaporator shell-side vapor DP is normally small but vapor disengagement
     # and suction nozzle losses matter; use a conservative screening allowance based on heat flux.
