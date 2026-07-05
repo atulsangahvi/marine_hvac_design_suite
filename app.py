@@ -35,7 +35,7 @@ from modules.manufacturing_package import make_csv_zip
 from modules.design_optimizer import condenser_geometry_optimizer
 from modules.validation_benchmarks import run_benchmarks
 
-APP_VERSION = "marine-chiller-suite-v16-merged-engineering-upgrade"
+APP_VERSION = "marine-chiller-suite-v17-merged-engineering-upgrade"
 
 st.set_page_config(page_title="Marine Chiller Design Suite", layout="wide")
 
@@ -318,7 +318,14 @@ with tabs[2]:
         h2.metric("Boiling HTC", f"{evap_res.get('shell_side_boiling_htc_w_m2k',0):.0f} W/m²K")
         h3.metric("Q possible", f"{evap_res.get('capacity_possible_kw',0):.1f} kW")
         h4.metric("Status", str(evap_res.get('status','')))
-        st.warning(str(evap_res.get('warnings','None'))) if evap_res.get('warnings') != 'None' else st.success("No major flooded-evaporator warnings from screening.")
+        flooded_warnings = evap_res.get('warnings', 'None')
+        if flooded_warnings and flooded_warnings != 'None':
+            if isinstance(flooded_warnings, (list, tuple)):
+                st.warning('\n'.join(str(w) for w in flooded_warnings))
+            else:
+                st.warning(str(flooded_warnings))
+        else:
+            st.success("No major flooded-evaporator warnings from screening.")
         st.info(str(evap_res.get('guidance','')))
     elif evap_mode.startswith("Shell"):
         e1,e2,e3,e4 = st.columns(4)

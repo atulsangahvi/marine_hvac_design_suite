@@ -1,8 +1,8 @@
-# Marine Chiller Design Suite v16
+# Marine Chiller Design Suite v17
 
 This build continues Milestone 1 (engineering calculation core) and Milestone 2 (engineering databases).
 
-## What is new in v16
+## What is new in v17
 
 ### Milestone 1 — Engineering core
 
@@ -85,7 +85,7 @@ pytest -q
 
 ## Important engineering note
 
-This v16 package is a meaningful step toward Milestone 1 and 2, but it is not yet a fully validated manufacturing design package. Before manufacturing, benchmark the outputs against supplier software, test data, TEMA/ASME mechanical design, vibration checks and class-society requirements.
+This v17 package is a meaningful step toward Milestone 1 and 2, but it is not yet a fully validated manufacturing design package. Before manufacturing, benchmark the outputs against supplier software, test data, TEMA/ASME mechanical design, vibration checks and class-society requirements.
 
 ## Suggested next v9 work
 
@@ -328,7 +328,7 @@ All v14 accuracy notes still apply; these remain screening tools requiring
 supplier/test validation before manufacture.
 
 
-## v16 update — merged and corrected Claude v15 improvements
+## v17 update — merged and corrected Claude v15 improvements
 
 This build keeps the useful v15 engineering additions but fixes integration issues found during testing.
 
