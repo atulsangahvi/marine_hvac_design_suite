@@ -1,42 +1,78 @@
 def refrigerant_mermaid(include_hgb=False, include_receiver=True):
-    lines=["flowchart LR","COMP[Compressor] --> COND[Condenser]","COND --> LR[Liquid Receiver]" if include_receiver else "COND --> LL[Liquid Line]","LR --> FD[Filter Drier]" if include_receiver else "LL --> FD[Filter Drier]","FD --> SG[Sight Glass]","SG --> SOL[Liquid Solenoid]","SOL --> EEV[EEV/TXV]","EEV --> EVAP[Evaporator]","EVAP --> COMP","COND -. water in/out .- WATER[Condenser Water]","EVAP -. chilled water/air .- LOAD[Load]"]
-    if include_hgb: lines.append("COMP --> HGB[Hot Gas Bypass] --> EVAP")
+    """Mermaid source for refrigerant circuit.
+
+    Uses conservative Mermaid syntax with quoted node labels and pipe-style edge
+    labels. This avoids Mermaid parser failures caused by slashes, spaces, or
+    punctuation inside labels on some Streamlit/mermaid-js versions.
+    """
+    lines = [
+        "flowchart LR",
+        "COMP[\"Compressor\"] --> COND[\"Condenser\"]",
+    ]
+    if include_receiver:
+        lines += [
+            "COND --> LR[\"Liquid receiver\"]",
+            "LR --> FD[\"Filter drier\"]",
+        ]
+    else:
+        lines += [
+            "COND --> LL[\"Liquid line\"]",
+            "LL --> FD[\"Filter drier\"]",
+        ]
+    lines += [
+        "FD --> SG[\"Sight glass\"]",
+        "SG --> SOL[\"Liquid solenoid\"]",
+        "SOL --> EEV[\"EEV or TXV\"]",
+        "EEV --> EVAP[\"Evaporator\"]",
+        "EVAP --> COMP",
+        "COND -.->|Condenser water| WATER[\"Condenser water in/out\"]",
+        "EVAP -.->|Chilled water or air| LOAD[\"Load\"]",
+    ]
+    if include_hgb:
+        lines.append("COMP --> HGB[\"Hot gas bypass\"] --> EVAP")
     return "\n".join(lines)
 
-def control_mermaid():
-    return """flowchart TD
-START[Start command] --> FLOW{Water/Air flow OK?}
-FLOW -- No --> AL1[Alarm no flow]
-FLOW -- Yes --> SAFE{Safety chain OK?}
-SAFE -- No --> AL2[Safety alarm]
-SAFE -- Yes --> PUMP[Start pump/fan]
-PUMP --> SOL[Open liquid solenoid]
-SOL --> COMP[Start compressor after delay]
-COMP --> EEV[Control EEV superheat]
-EEV --> MON[Monitor HP LP Tdischarge current]
-MON --> LIM{Approaching limit?}
-LIM -- Yes --> UNLOAD[Unload/reduce capacity/alarm]
-LIM -- No --> RUN[Continue running]
-"""
 
+def control_mermaid():
+    """Mermaid source for chiller control sequence.
+
+    Uses quote labels and pipe labels for branch text to avoid Mermaid syntax
+    errors in Streamlit Cloud.
+    """
+    return """flowchart TD
+START[\"Start command\"] --> FLOW{\"Water or air flow OK?\"}
+FLOW -->|No| AL1[\"Alarm: no flow\"]
+FLOW -->|Yes| SAFE{\"Safety chain OK?\"}
+SAFE -->|No| AL2[\"Safety alarm\"]
+SAFE -->|Yes| PUMP[\"Start pump or fan\"]
+PUMP --> SOL[\"Open liquid solenoid\"]
+SOL --> COMP[\"Start compressor after delay\"]
+COMP --> EEV[\"Control EEV superheat\"]
+EEV --> MON[\"Monitor HP, LP, discharge temperature and current\"]
+MON --> LIM{\"Approaching limit?\"}
+LIM -->|Yes| UNLOAD[\"Unload, reduce capacity, alarm\"]
+LIM -->|No| RUN[\"Continue running\"]
+UNLOAD --> MON
+RUN --> MON
+"""
 
 
 def mermaid_html(diagram: str, title: str = "Mermaid diagram") -> str:
     """Return HTML that renders Mermaid in Streamlit components.
 
-    st.code(..., language='mermaid') only shows Mermaid source text in Streamlit.
-    This helper loads Mermaid JS and renders the diagram inside an iframe component.
+    Streamlit does not render Mermaid natively. The diagram is injected into an
+    iframe via components.html. The source is HTML-escaped before insertion.
     """
-    safe_diagram = (diagram or "").replace("`", "&#96;")
+    import html
+    safe_diagram = html.escape(diagram or "")
+    safe_title = html.escape(title or "Mermaid diagram")
     return f"""
-    <div style=\"font-family: Arial, sans-serif;\">
-      <div class=\"mermaid\">
-{safe_diagram}
-      </div>
+    <div style=\"font-family: Arial, sans-serif; width:100%; min-height:260px;\">
+      <pre class=\"mermaid\" style=\"background: transparent;\">{safe_diagram}</pre>
       <script src=\"https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js\"></script>
       <script>
         mermaid.initialize({{ startOnLoad: true, securityLevel: 'loose', theme: 'default' }});
       </script>
-      <noscript>{title}: JavaScript is required to render this Mermaid diagram.</noscript>
+      <noscript>{safe_title}: JavaScript is required to render this Mermaid diagram.</noscript>
     </div>
     """
