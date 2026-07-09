@@ -32,9 +32,7 @@ def line_conditions(ref: str, line: str, evap_c: float, cond_c: float,
     line: 'suction' | 'discharge' | 'liquid'
     """
     if PropsSI is None:
-        fallback = {"suction": (12.0, 1.15e-5), "discharge": (55.0, 1.35e-5), "liquid": (1100.0, 1.7e-4)}
-        rho, mu = fallback.get(line, fallback["suction"])
-        return {"rho": rho, "mu": mu, "basis": "fallback constants (CoolProp missing)"}
+        raise RuntimeError("CoolProp is required for refrigerant line sizing. Install CoolProp and rerun this module.")
     if line == "suction":
         p = PropsSI("P", "T", evap_c + 273.15, "Q", 1, ref)
         T = evap_c + superheat_k + 273.15
@@ -62,8 +60,10 @@ def pressure_drop_simple(mdot_kg_s: float, density: float, mu: float, id_mm: flo
 
 def sat_temp_penalty_k(ref: str, line: str, evap_c: float, cond_c: float, dp_kpa: float) -> float:
     """Equivalent saturation-temperature loss caused by the line pressure drop."""
-    if PropsSI is None or dp_kpa <= 0:
+    if dp_kpa <= 0:
         return 0.0
+    if PropsSI is None:
+        raise RuntimeError("CoolProp is required to convert refrigerant pressure drop into saturation-temperature penalty.")
     try:
         t_ref = evap_c if line == "suction" else cond_c
         p0 = PropsSI("P", "T", t_ref + 273.15, "Q", 1, ref)
@@ -88,7 +88,6 @@ def select_line_size(mdot_kg_s: float, density: float, target_v_low: float, targ
         rows.append(row)
     return pd.DataFrame(rows)
 
-def oil_return_guidance(compressor_type: str, suction_velocity: float, vertical_riser_m: float) -> dict:
-    min_v = 7.5 if vertical_riser_m>1 else 4.0
-    required = suction_velocity < min_v
-    return {'oil_return_ok': not required, 'minimum_suction_velocity_m_s': min_v, 'actual_suction_velocity_m_s': suction_velocity, 'recommendation': 'Use smaller riser/double riser/oil separator and check part-load velocity.' if required else 'Oil return velocity appears acceptable for screening.'}
+def oil_return_guidance(compressor_type: str, suction_velocity: float, vertical_riser_m: float, refrigerant: str = "", load_fraction: float = 1.0, oil_separator: bool = False, flooded_evaporator: bool = False) -> dict:
+    from .oil_management import assess_oil_return
+    return assess_oil_return(compressor_type, refrigerant, suction_velocity, vertical_riser_m, load_fraction=load_fraction, oil_separator=oil_separator, flooded_evaporator=flooded_evaporator)

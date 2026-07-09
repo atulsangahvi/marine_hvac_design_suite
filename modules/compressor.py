@@ -42,35 +42,7 @@ def cycle_operating_point(ref: str, evap_c: float, cond_c: float, superheat_k: f
     (rated_cooling_kw at rated_evap_c/rated_cond_c).
     """
     if PropsSI is None:
-        # Fallback screening model used when CoolProp wheels are unavailable in the
-        # local/test runtime. Streamlit Cloud should still use CoolProp when installed.
-        # It reproduces the rated point exactly when rated_cooling_kw is provided and
-        # applies compressor-type pressure-ratio derating for higher condensing lift.
-        cur = _eta_curves(compressor_type)
-        p1 = sat_pressure_pa(ref, evap_c, 1.0)
-        p2 = sat_pressure_pa(ref, cond_c, 0.0)
-        pr = p2 / max(p1, 1.0)
-        if rated_cooling_kw is not None:
-            p1r = sat_pressure_pa(ref, rated_evap_c if rated_evap_c is not None else evap_c, 1.0)
-            p2r = sat_pressure_pa(ref, rated_cond_c if rated_cond_c is not None else cond_c, 0.0)
-            pr_r = p2r / max(p1r, 1.0)
-            lift = max(cond_c - (rated_cond_c if rated_cond_c is not None else cond_c), 0.0)
-            cool_kw = float(rated_cooling_kw) * max(0.45, 1.0 - {"recip":0.010,"screw":0.006}.get("screw" if "screw" in compressor_type.lower() else "recip" if "recip" in compressor_type.lower() or "piston" in compressor_type.lower() else "scroll",0.008) * lift)
-            swept = cool_kw / max(35.0, 1.0) / max(1.0 - 0.015*pr_r, 0.45)
-        else:
-            swept = float(swept_flow_m3_s or 1.0)
-            cool_kw = max(1.0, swept * 35.0 * max(1.0 - 0.015*pr, 0.45))
-        eta_is = max(0.45, cur["a"] - cur["b"] * (pr - cur["pr_opt"]) ** 2)
-        # Approximate power rises with PR and capacity; calibrated to COP ~3.2 at common AC conditions.
-        w_kw = cool_kw / max(1.2, 4.0 - 0.28*(pr-2.5))
-        t2_c = evap_c + superheat_k + 18.0 * max(pr - 1.0, 0.0) / max(eta_is, 0.45)
-        return {
-            "cooling_kw": cool_kw, "power_kw": w_kw, "heat_rejection_kw": cool_kw + w_kw,
-            "cop": cool_kw / max(w_kw, 1e-9), "mass_flow_kg_s": cool_kw / 155.0,
-            "pressure_ratio": pr, "eta_is": eta_is, "eta_vol": max(0.45, 1.0 - 0.015*pr),
-            "swept_flow_m3_s": swept, "discharge_temp_c": t2_c,
-            "suction_density_kg_m3": 20.0, "fallback": "No CoolProp: approximate compressor model"
-        }
+        raise RuntimeError("CoolProp is required for compressor cycle calculations. Install CoolProp and rerun this module.")
     cur = _eta_curves(compressor_type)
 
     def _state(te, tc):

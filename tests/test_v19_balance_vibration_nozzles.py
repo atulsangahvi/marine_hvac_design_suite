@@ -1,3 +1,7 @@
+import pytest
+
+pytest.importorskip("CoolProp")
+
 from modules.system_balance import solve_balance_point
 from modules.vibration import tube_vibration_screening
 from modules.nozzles import size_nozzle, condenser_nozzle_set

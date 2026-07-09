@@ -339,54 +339,13 @@ def evaluate_condenser(q_rej_kw: float, water_type: str, water_in_c: float, wate
             "assumed_discharge_temp_c": round(t_disc, 1),
             "assumed_subcool_k": round(sc, 1),
         }
-    except Exception:
-        # Fallback three-zone split when CoolProp is unavailable or a blend state
-        # call fails. This keeps the engineering/report logic active in test and
-        # non-CoolProp environments while marking it clearly as an approximate
-        # screening split. Typical HVAC condensers reject about 8-15% in
-        # desuperheating and 2-6% in subcooling.
-        t_disc = float(discharge_temp_c) if discharge_temp_c else float(condensing_temp_c) + 25.0
-        sc = max(float(subcool_k), 0.0)
-        f_desup = min(max((t_disc - float(condensing_temp_c)) / 250.0, 0.06), 0.15)
-        f_sub = min(max(sc / 100.0, 0.0), 0.07)
-        f_lat = max(0.70, 1.0 - f_desup - f_sub)
-        norm = f_desup + f_lat + f_sub
-        q_desup = float(q_rej_kw) * f_desup / norm
-        q_lat = float(q_rej_kw) * f_lat / norm
-        q_sub = float(q_rej_kw) * f_sub / norm
-        tw0 = float(water_in_c)
-        tw1 = tw0 + dtw * (q_sub / float(q_rej_kw))
-        tw2 = tw1 + dtw * (q_lat / float(q_rej_kw))
-        tw3 = float(water_out_c)
-        ho_desup = max(0.10 * ho, 250.0)
-        ho_sub = max(0.30 * ho, 400.0)
-        def _u_from_ho_fb(h_out):
-            inv = 1.0/max(h_out, 1.0) + (ao/max(ai, 1e-12))/max(hi, 1.0) + rf_i + rf_o + wall/max(k_wall, 1e-9)
-            return 1.0/max(inv, 1e-12)
-        u_desup = _u_from_ho_fb(ho_desup)
-        u_sub = _u_from_ho_fb(ho_sub)
-        lmtd_desup = _lmtd(max(t_disc - tw3, 0.05), max(float(condensing_temp_c) - tw2, 0.05))
-        lmtd_lat = _lmtd(max(float(condensing_temp_c) - tw2, 0.05), max(float(condensing_temp_c) - tw1, 0.05))
-        lmtd_sub = _lmtd(max(float(condensing_temp_c) - sc - tw0, 0.05), max(float(condensing_temp_c) - sc - tw1, 0.05)) if q_sub > 1e-6 else 1.0
-        a_desup = q_desup * 1000.0 / max(u_desup * lmtd_desup, 1e-9)
-        a_lat = q_lat * 1000.0 / max(uo * lmtd_lat, 1e-9)
-        a_sub = q_sub * 1000.0 / max(u_sub * lmtd_sub, 1e-9) if q_sub > 1e-6 else 0.0
-        a_req = a_desup + a_lat + a_sub
-        q_possible_zoned_kw = float(q_rej_kw) * ao / max(a_req, 1e-9)
+    except Exception as exc:
         zone_info = {
-            "zone_model": "three-zone approximate fallback (no CoolProp)",
-            "zone_q_desuperheat_kw": round(q_desup, 2),
-            "zone_q_condense_kw": round(q_lat, 2),
-            "zone_q_subcool_kw": round(q_sub, 2),
-            "zone_area_desuperheat_m2": round(a_desup, 3),
-            "zone_area_condense_m2": round(a_lat, 3),
-            "zone_area_subcool_m2": round(a_sub, 3),
-            "zone_area_required_m2": round(a_req, 3),
-            "zone_u_desuperheat_w_m2k": round(u_desup, 1),
-            "zone_u_subcool_w_m2k": round(u_sub, 1),
-            "assumed_discharge_temp_c": round(t_disc, 1),
-            "assumed_subcool_k": round(sc, 1),
+            "zone_model": "three-zone unavailable - CoolProp required",
+            "zone_error": str(exc),
+            "zone_guidance": "Install/enable CoolProp and use a refrigerant supported by CoolProp before relying on condenser zone allocation."
         }
+        q_possible_zoned_kw = q_possible_kw
     # Use the more conservative (physically stricter) of the two estimates.
     q_possible_kw = min(q_possible_kw, q_possible_zoned_kw)
 

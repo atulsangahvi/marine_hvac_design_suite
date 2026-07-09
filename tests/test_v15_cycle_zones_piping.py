@@ -1,3 +1,7 @@
+import pytest
+
+pytest.importorskip("CoolProp")
+
 from modules.compressor import cycle_operating_point, estimate_operating_point
 from modules.condenser import evaluate_condenser, _lmtd
 from modules.refrigerant_piping import line_conditions, select_line_size, copper_id_mm
