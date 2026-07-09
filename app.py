@@ -27,6 +27,7 @@ from data.materials import MATERIALS
 from data.compressor_library import compressor_library_df
 from modules.compressor_map import interpolate_idw, derate_without_map
 from modules.refrigerant_piping import select_line_size, oil_return_guidance, equivalent_length, line_conditions
+from modules.oil_management import assess_oil_return, oil_management_table, oil_management_notes_table
 from modules.water_system import water_system_table
 from modules.marine_compliance import marine_compliance_checks
 from modules.costing_weight import weight_cost_summary, cost_table
@@ -39,7 +40,7 @@ from modules.manufacturing_package import make_csv_zip
 from modules.design_optimizer import condenser_geometry_optimizer
 from modules.validation_benchmarks import run_benchmarks
 
-APP_VERSION = "marine-chiller-suite-v20-svg-drawings-mechanical"
+APP_VERSION = "marine-chiller-suite-v21-coolprop-mandatory-oil-management"
 
 st.set_page_config(page_title="Marine Chiller Design Suite", layout="wide")
 
@@ -94,7 +95,7 @@ if "selected_tube" not in st.session_state:
 
 tabs = st.tabs([
     "1 Compressor", "2 Condenser", "3 Evaporator", "4 Pressure Switches", "5 Piping + Valves",
-    "6 Electrical + Controls", "7 Controller I/O + Alarms", "8 Safety + BOM", "9 Drawings", "10 Reports", "11 Compliance + QA", "12 Datasheets + Cost", "13 Service + FAT", "14 Evap Condenser", "15 System Balance + Mech"
+    "6 Electrical + Controls", "7 Controller I/O + Alarms", "8 Safety + BOM", "9 Drawings", "10 Reports", "11 Compliance + QA", "12 Datasheets + Cost", "13 Service + FAT", "14 Evap Condenser", "15 System Balance + Mech", "16 Oil Management"
 ])
 
 with tabs[0]:
@@ -667,8 +668,18 @@ with tabs[11]:
     st.dataframe(select_line_size(_m, discharge_density, 8, 18, 35, equivalent_length(discharge_len), mu=_dc['mu'], ref=ref, line="discharge", evap_c=evap_c, cond_c=cond_c), hide_index=True, use_container_width=True)
     st.write("Liquid line candidates")
     st.dataframe(select_line_size(_m, liquid_density, 0.4, 1.5, 35, equivalent_length(liquid_len), mu=_lc['mu']), hide_index=True, use_container_width=True)
-    st.write("Oil return guidance")
-    st.json(oil_return_guidance(compressor_type, suction_v if 'suction_v' in globals() else 8.0, 3.0))
+    st.subheader("Oil return guidance")
+    oil_res = oil_return_guidance(
+        compressor_type,
+        suction_v if 'suction_v' in globals() else 8.0,
+        3.0,
+        refrigerant=ref,
+        load_fraction=1.0,
+        oil_separator=False,
+        flooded_evaporator=False,
+    )
+    st.dataframe(oil_management_table(oil_res), hide_index=True, use_container_width=True)
+    st.dataframe(oil_management_notes_table(oil_res), hide_index=True, use_container_width=True)
 
     st.subheader("Water system detailed table")
     st.dataframe(water_system_table(cooling_kw, 12.0, 7.0, pipe_id if 'pipe_id' in globals() else 65.0, 'Water', glycol_pct if 'glycol_pct' in globals() else 0, 50, 35), hide_index=True, use_container_width=True)
@@ -743,6 +754,42 @@ with tabs[13]:
     d4.metric("Fan + pump", f"{evap_cond_res.get('fan_power_kw',0)+evap_cond_res.get('spray_pump_power_kw',0):.2f} kW")
     st.dataframe(pd.DataFrame([[k,v] for k,v in evap_cond_res.items()], columns=["Parameter","Value"]), hide_index=True, use_container_width=True)
     st.info(str(evap_cond_res.get('guidance','')))
+
+
+
+with tabs[15]:
+    st.header("Oil management and oil return screening")
+    st.caption("Oil return must be checked at design load and minimum compressor capacity. This module is a screening tool; verify final suction piping with the compressor manufacturer's piping manual.")
+    o1, o2, o3, o4 = st.columns(4)
+    with o1:
+        oil_suction_v = st.number_input("Actual suction velocity (m/s)", 0.1, 40.0, 8.0, step=0.1)
+        oil_min_load = st.number_input("Minimum operating load fraction", 0.1, 1.0, 1.0, step=0.05)
+    with o2:
+        oil_vertical = st.number_input("Vertical suction riser height (m)", 0.0, 100.0, 3.0, step=0.5)
+        oil_horizontal = st.number_input("Horizontal suction run (m)", 0.0, 500.0, 12.0, step=1.0)
+    with o3:
+        oil_separator = st.checkbox("Oil separator fitted", value=False)
+        flooded_oil = st.checkbox("Flooded evaporator / shell oil logging risk", value=False)
+    with o4:
+        st.metric("Refrigerant", ref)
+        st.metric("Compressor", compressor_type)
+    oil_result = assess_oil_return(
+        compressor_type=compressor_type,
+        refrigerant=ref,
+        actual_suction_velocity_m_s=oil_suction_v,
+        vertical_riser_m=oil_vertical,
+        horizontal_run_m=oil_horizontal,
+        load_fraction=oil_min_load,
+        oil_separator=oil_separator,
+        flooded_evaporator=flooded_oil,
+    )
+    if oil_result.get("oil_return_ok"):
+        st.success(f"Oil return screening PASS. Velocity margin: {oil_result.get('velocity_margin_m_s')} m/s")
+    else:
+        st.error(f"Oil return screening CHECK. Velocity margin: {oil_result.get('velocity_margin_m_s')} m/s")
+    st.dataframe(oil_management_table(oil_result), hide_index=True, use_container_width=True)
+    st.dataframe(oil_management_notes_table(oil_result), hide_index=True, use_container_width=True)
+    st.info("For vertical risers, also check double-riser arrangement, oil traps at base of risers, minimum compressor step/unloading, oil separator efficiency, and flooded evaporator oil return method.")
 
 st.caption("Preliminary engineering tool only. Final pressure vessel, electrical, refrigeration and marine compliance design must be checked by qualified engineers and equipment suppliers.")
 

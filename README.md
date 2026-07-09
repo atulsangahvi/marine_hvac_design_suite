@@ -1,4 +1,4 @@
-# Marine Chiller Design Suite v20
+# Marine Chiller Design Suite v21
 
 This build continues Milestone 1 (engineering calculation core) and Milestone 2 (engineering databases).
 
@@ -342,7 +342,7 @@ Retained and corrected:
 Validation status: repository tests pass in the build environment. This remains an engineering design/screening suite and still needs supplier/manufacturer validation before production release.
 
 
-## v20 update — system balance solver, vibration screening and nozzle sizing (on the v18 base)
+## v21 update — system balance solver, vibration screening and nozzle sizing (on the v18 base)
 
 Applied directly onto the user's v18 build (all v17/v18 corrections retained,
 including the no-CoolProp fallback paths in the compressor cycle model and the
@@ -382,21 +382,28 @@ saturated/condensing vapor without an impingement plate); liquid outlet held
 required. Reinforcement pads, projections and nozzle loads remain ASME/TEMA
 mechanical design work.
 
-### App wiring in v20
+### App wiring in v21
 
 - Condenser tab passes the ACTUAL discharge temperature from the Compressor tab
   (plus the entered subcooling) into the three-zone model instead of the +25 K
   default.
 - Tab 15 pre-fills condenser UA and water flow from the Condenser tab result.
-- APP_VERSION bumped to marine-chiller-suite-v20-balance-vibration-nozzles.
-- New tests: tests/test_v20_balance_vibration_nozzles.py.
+- APP_VERSION bumped to marine-chiller-suite-v21-balance-vibration-nozzles.
+- New tests: tests/test_v21_balance_vibration_nozzles.py.
 
 These remain screening tools; validate against supplier software, test data,
 TEMA/ASME mechanical design and class-society requirements before manufacture.
 
 
-## v20 update
+## v21 update
 - Replaced Mermaid diagrams with SVG drawing engine.
 - Retained v19 vibration/nozzle/system-balance improvements after review.
 - Added preliminary condenser and evaporator tubesheet thickness screening.
 - Added evaporator vibration screening in the mechanical tab.
+
+
+## v21 update
+- CoolProp is now mandatory for refrigerant cycle, line sizing and three-zone condenser thermodynamics. Approximate no-CoolProp refrigerant fallbacks were removed from production calculations.
+- Added formatted Oil Management / Oil Return screening module.
+- Raw JSON/dictionary oil-return display was replaced with engineering tables and recommendations.
+- Three-zone condenser now reports unavailable zone allocation rather than silently using approximate fallback when CoolProp calls fail.
